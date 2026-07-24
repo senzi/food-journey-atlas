@@ -9,6 +9,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  buildTripSearchText,
+  normalizeTripSearchQuery,
+} from "../lib/trip-search";
 
 function usePathname() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
@@ -662,20 +666,22 @@ function Trips({ atlas }: { atlas: Atlas }) {
   const [kind, setKind] = useState("");
   const [sort, setSort] = useState("desc");
   const groupedRegions = useMemo(() => regionGroups(atlas), [atlas]);
+  const tripSearchIndex = useMemo(
+    () =>
+      new Map(
+        atlas.trips.map((trip) => [
+          trip.id,
+          buildTripSearchText(atlas, trip),
+        ]),
+      ),
+    [atlas],
+  );
   const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeTripSearchQuery(query);
     return atlas.trips
       .filter((trip) => {
         const year = new Date(trip.startDate).getFullYear();
-        const haystack = [
-          trip.title,
-          trip.subtitle,
-          trip.summary,
-          ...trip.regions,
-          ...trip.themeFoods.map((x: any) => x.name),
-        ]
-          .join(" ")
-          .toLowerCase();
+        const haystack = tripSearchIndex.get(trip.id) || "";
         return (
           (!q || haystack.includes(q)) &&
           (!from || year >= Number(from)) &&
@@ -695,7 +701,7 @@ function Trips({ atlas }: { atlas: Atlas }) {
           (sort === "desc" ? 1 : -1) *
           (new Date(b.startDate).getTime() - new Date(a.startDate).getTime()),
       );
-  }, [atlas, query, from, to, region, kind, sort]);
+  }, [atlas, tripSearchIndex, query, from, to, region, kind, sort]);
   return (
     <main>
       <section className="page-intro">
@@ -726,7 +732,7 @@ function Trips({ atlas }: { atlas: Atlas }) {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="菜名、城市、旅程…"
+              placeholder="地点、正文、菜名、城市…"
             />
           </label>
           <div className="double-field">

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { handleJourneyQuery } from "../lib/journey-query.ts";
+import { buildTripSearchText } from "../lib/trip-search.ts";
 
 test("build produces a directly deployable Pages root", async () => {
   const html = await readFile(
@@ -28,6 +29,26 @@ test("static client contains the journey experience", async () => {
   assert.match(clientCode, /复刻一段美食旅程/);
   assert.match(clientCode, /理解并生成旅程/);
   assert.match(clientCode, /2025年 厦门市 · 综合寻味/);
+});
+
+test("trip search covers visit and post details without a heavy index", async () => {
+  const atlas = JSON.parse(
+    await readFile(new URL("../public/data/atlas.json", import.meta.url), "utf8"),
+  );
+  const documents = atlas.trips.map((trip) =>
+    buildTripSearchText(atlas, trip),
+  );
+  const matchedTrips = atlas.trips.filter((trip, index) =>
+    documents[index].includes("体检"),
+  );
+  const indexBytes = Buffer.byteLength(documents.join("\n"));
+
+  assert.ok(
+    matchedTrips.some((trip) =>
+      trip.visits.some((visit) => visit.name === "朝阳医院体检中心"),
+    ),
+  );
+  assert.ok(indexBytes < 2 * 1024 * 1024);
 });
 
 test("journey-query handler validates input before calling the model", async () => {
