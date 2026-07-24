@@ -8,8 +8,8 @@
   "scripts": {
     "data:build": "node scripts/build-public-data.mjs",
     "basemap:update-destinations": "node scripts/update-destination-boundaries.mjs",
-    "dev": "npm run data:build && vinext dev",
-    "build": "npm run data:build && vinext build",
+    "dev": "vinext dev",
+    "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
