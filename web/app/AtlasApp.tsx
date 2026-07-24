@@ -137,6 +137,44 @@ function geometryCoordinates(geometry: any) {
   return coordinates;
 }
 
+function geometryContainsCoordinate(
+  geometry: any,
+  longitude: number,
+  latitude: number,
+) {
+  function inRing(ring: number[][]) {
+    let inside = false;
+    for (
+      let index = 0, previous = ring.length - 1;
+      index < ring.length;
+      previous = index++
+    ) {
+      const [x, y] = ring[index];
+      const [previousX, previousY] = ring[previous];
+      const crosses =
+        y > latitude !== previousY > latitude &&
+        longitude <
+          ((previousX - x) * (latitude - y)) /
+            (previousY - y || 1e-12) +
+            x;
+      if (crosses) inside = !inside;
+    }
+    return inside;
+  }
+  const polygons =
+    geometry?.type === "Polygon"
+      ? [geometry.coordinates]
+      : geometry?.type === "MultiPolygon"
+        ? geometry.coordinates
+        : [];
+  return polygons.some(
+    (polygon: number[][][]) =>
+      polygon[0] &&
+      inRing(polygon[0]) &&
+      !polygon.slice(1).some((hole: number[][]) => inRing(hole)),
+  );
+}
+
 function geometryPath(
   geometry: any,
   project: (coordinate: number[]) => { x: number; y: number },
@@ -191,6 +229,39 @@ function haversineKm(a: any, b: any) {
       Math.cos(radians(b.latitude)) *
       Math.sin(deltaLng / 2) ** 2;
   return radius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function orderByShortestRoute<T>(items: T[]) {
+  if (items.length < 3) return [...items];
+  let bestDistance = Infinity;
+  let bestRoute: T[] = [...items];
+
+  function search(route: T[], remaining: T[], distance: number) {
+    if (distance >= bestDistance) return;
+    if (!remaining.length) {
+      bestDistance = distance;
+      bestRoute = [...route];
+      return;
+    }
+    for (let index = 0; index < remaining.length; index += 1) {
+      const next = remaining[index];
+      const previous = route.at(-1);
+      search(
+        [...route, next],
+        [...remaining.slice(0, index), ...remaining.slice(index + 1)],
+        distance + (previous ? haversineKm(previous, next) : 0),
+      );
+    }
+  }
+
+  for (let index = 0; index < items.length; index += 1) {
+    search(
+      [items[index]],
+      [...items.slice(0, index), ...items.slice(index + 1)],
+      0,
+    );
+  }
+  return bestRoute;
 }
 
 function amapMarkerUrl(point: any) {
@@ -298,7 +369,11 @@ function regionGroups(atlas: Atlas) {
       cities: cities.sort(
         (a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"),
       ),
-      count: cities.reduce((sum, city) => sum + city.count, 0),
+      count: atlas.trips.filter((trip) =>
+        tripRegionOptions(atlas, trip).some(
+          (option) => option.province === province,
+        ),
+      ).length,
     }))
     .sort(
       (a, b) =>
@@ -555,7 +630,10 @@ function Trips({ atlas }: { atlas: Atlas }) {
           (!to || year <= Number(to)) &&
           (!region ||
             tripRegionOptions(atlas, trip).some(
-              (option) => option.key === region,
+              (option) =>
+                option.key === region ||
+                (region.endsWith("::*") &&
+                  option.province === region.slice(0, -3)),
             )) &&
           (!kind || trip.kind === kind)
         );
@@ -632,24 +710,60 @@ function Trips({ atlas }: { atlas: Atlas }) {
           </label>
           <fieldset className="region-filters">
             <legend>按国内或海外地区查找</legend>
-            {groupedRegions.map((group) => (
-              <div className="region-group" key={group.province}>
-                <h4>{group.province}</h4>
-                {group.cities.map((city) => (
-                  <button
-                    type="button"
-                    className={region === city.key ? "selected" : ""}
-                    key={city.key}
-                    onClick={() =>
-                      setRegion(region === city.key ? "" : city.key)
+            {groupedRegions.map((group) => {
+              const directCity =
+                ["北京市", "上海市", "天津市", "重庆市"].includes(
+                  group.province,
+                ) &&
+                group.cities.length === 1 &&
+                group.cities[0].city === group.province
+                  ? group.cities[0]
+                  : null;
+              const directProvince =
+                group.province === "台湾省"
+                  ? {
+                      key: `${group.province}::*`,
+                      count: group.count,
                     }
-                  >
-                    <span>{city.label}</span>
-                    <small>{city.count}</small>
-                  </button>
-                ))}
-              </div>
-            ))}
+                  : directCity;
+              return (
+                <div className="region-group" key={group.province}>
+                  {directProvince ? (
+                    <button
+                      type="button"
+                      className={`province-filter ${region === directProvince.key ? "selected" : ""}`}
+                      onClick={() =>
+                        setRegion(
+                          region === directProvince.key
+                            ? ""
+                            : directProvince.key,
+                        )
+                      }
+                    >
+                      <strong>{group.province}</strong>
+                      <small>{directProvince.count}</small>
+                    </button>
+                  ) : (
+                    <>
+                      <h4>{group.province}</h4>
+                      {group.cities.map((city) => (
+                        <button
+                          type="button"
+                          className={region === city.key ? "selected" : ""}
+                          key={city.key}
+                          onClick={() =>
+                            setRegion(region === city.key ? "" : city.key)
+                          }
+                        >
+                          <span>{city.label}</span>
+                          <small>{city.count}</small>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </fieldset>
         </aside>
         <div className="archive-results">
@@ -762,6 +876,18 @@ function Graph({
       (feature) =>
         feature.level === "district" && districtNames.has(feature.name),
     ) || [];
+  const destinationFeatures =
+    basemap?.features.filter(
+      (feature) =>
+        ["country", "admin1"].includes(feature.level) &&
+        points.some((point: any) =>
+          geometryContainsCoordinate(
+            feature.geometry,
+            point.longitude,
+            point.latitude,
+          ),
+        ),
+    ) || [];
   const routeExtent = points.map((point: any) =>
     mapCoordinate([point.longitude, point.latitude]),
   );
@@ -810,7 +936,16 @@ function Graph({
     { longitude: number; latitude: number; count: number }
   >();
   for (const point of points) {
-    const name = point.district || point.city || point.province;
+    const name =
+      point.district ||
+      point.city ||
+      point.province ||
+      point.destinationLabel ||
+      (points.every(
+        (item: any) => !item.district && !item.city && !item.province,
+      )
+        ? destinationFromTitle(trip.title)
+        : "");
     if (!name) continue;
     const current = labelGroups.get(name) || {
       longitude: 0,
@@ -1020,6 +1155,24 @@ function Graph({
                   d={geometryPath(feature.geometry, project)}
                 />
               ))}
+              {destinationFeatures
+                .filter((feature) => feature.level === "country")
+                .map((feature) => (
+                  <path
+                    key={`country-${feature.name}`}
+                    className="country-shape"
+                    d={geometryPath(feature.geometry, project)}
+                  />
+                ))}
+              {destinationFeatures
+                .filter((feature) => feature.level === "admin1")
+                .map((feature) => (
+                  <path
+                    key={`admin1-${feature.name}`}
+                    className="admin1-shape"
+                    d={geometryPath(feature.geometry, project)}
+                  />
+                ))}
               {cityFeatures.map((feature) => (
                 <path
                   key={`city-${feature.name}`}
@@ -1405,6 +1558,7 @@ function Recreate({ atlas }: { atlas: Atlas }) {
             sourceTripId: trip.id,
             regionKey: regionOption.key,
             regionGroup: regionOption.province,
+            destinationLabel: regionOption.city,
           };
         }),
       )
@@ -1474,9 +1628,9 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       })
       .sort((a, b) => a.score - b.score)
       .map((item) => item.visit);
-    const generated = [anchor, ...nearby]
-      .slice(0, wanted)
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const generated = orderByShortestRoute(
+      [anchor, ...nearby].slice(0, wanted),
+    );
     setResult(generated);
     setSelectedId(generated[0]?.id || "");
   }
@@ -1632,7 +1786,7 @@ function Recreate({ atlas }: { atlas: Atlas }) {
                 ))}
               </div>
               <p className="proxy-note">
-                基于历史足迹在相近地区内随机组合；符合条件的记录不足时不会跨区凑数。不是导航或实时营业建议。
+                基于历史足迹在相近地区内随机组合，并按较短动线排列；符合条件的记录不足时不会跨区凑数。不是导航或实时营业建议。
               </p>
             </>
           ) : (

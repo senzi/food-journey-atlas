@@ -7,6 +7,7 @@
   },
   "scripts": {
     "data:build": "node scripts/build-public-data.mjs",
+    "basemap:update-destinations": "node scripts/update-destination-boundaries.mjs",
     "dev": "npm run data:build && vinext dev",
     "build": "npm run data:build && vinext build",
     "start": "vinext start",

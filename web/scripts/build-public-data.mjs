@@ -481,6 +481,17 @@ const riverGeoJson = JSON.parse(
     "utf8",
   ),
 );
+const destinationBoundaries = JSON.parse(
+  readFileSync(
+    path.resolve(
+      process.cwd(),
+      "scripts",
+      "vendor",
+      "journey_destination_boundaries.json",
+    ),
+    "utf8",
+  ),
+);
 const municipalityFeatures = [
   "北京市.json",
   "上海市.json",
@@ -511,6 +522,29 @@ const intersectsChina = (feature) => {
     bounds[1] > chinaBounds[3]
   );
 };
+const overseasJourneyPoints = publicTrips
+  .flatMap((trip) => trip.visits)
+  .filter(
+    (visit) =>
+      Number.isFinite(visit.longitude) &&
+      Number.isFinite(visit.latitude) &&
+      !(
+        visit.longitude >= chinaBounds[0] &&
+        visit.longitude <= chinaBounds[2] &&
+        visit.latitude >= chinaBounds[1] &&
+        visit.latitude <= chinaBounds[3]
+      ),
+  );
+const intersectsOverseasJourney = (feature) => {
+  const bounds = geometryBounds(feature.geometry);
+  return overseasJourneyPoints.some(
+    (point) =>
+      bounds[2] >= point.longitude - 3 &&
+      bounds[0] <= point.longitude + 3 &&
+      bounds[3] >= point.latitude - 3 &&
+      bounds[1] <= point.latitude + 3,
+  );
+};
 const basemap = {
   source:
     "行政区划：cn-atlas 2023；河流：Natural Earth 1:50m（CC0）",
@@ -524,13 +558,14 @@ const basemap = {
     ...municipalityFeatures
       .filter((feature) => usedDistricts.has(feature.properties?.name))
       .map((feature) => compactMapFeature(feature, "district")),
+    ...destinationBoundaries.features,
   ],
   rivers: riverGeoJson.features
     .filter(
       (feature) =>
         feature.geometry &&
         feature.properties?.scalerank <= 6 &&
-        intersectsChina(feature),
+        (intersectsChina(feature) || intersectsOverseasJourney(feature)),
     )
     .map((feature) => ({
       name: feature.properties?.name || "",
