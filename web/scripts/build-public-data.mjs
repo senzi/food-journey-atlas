@@ -8,7 +8,9 @@ const outputDir = path.resolve(process.cwd(), "public", "data");
 
 async function readJsonl(file) {
   const rows = [];
-  const input = createReadStream(path.join(sourceDir, file), { encoding: "utf8" });
+  const input = createReadStream(path.join(sourceDir, file), {
+    encoding: "utf8",
+  });
   const lines = createInterface({ input, crlfDelay: Infinity });
   for await (const line of lines) {
     if (line.trim()) rows.push(JSON.parse(line));
@@ -112,20 +114,40 @@ function compactPost(post) {
   };
 }
 
+function hasFoodEvidence(visit) {
+  if ((visit.food_ids || []).length) return true;
+  return (visit.post_ids || []).some((postId) => {
+    const post = postMap.get(postId);
+    if (!post) return false;
+    const hasFoodMention = (post.mentions || []).some((mention) =>
+      ["dish", "cuisine", "restaurant"].includes(mention.entity_type),
+    );
+    return hasFoodMention || collectAnalysis(post).labels.length > 0;
+  });
+}
+
 function compactVisit(visit, role = "anchor") {
   const point = visit.points?.[0];
   const place = visit.place_id ? placeMap.get(visit.place_id) : null;
   const region = visit.region_id ? regionMap.get(visit.region_id) : null;
+  const displayRole =
+    role === "anchor" && !hasFoodEvidence(visit) ? "context" : role;
   return {
     id: visit.id,
-    role,
+    role: displayRole,
     name: place?.canonical_name || region?.name || point?.name || "位置未命名",
     placeId: visit.place_id,
     regionId: visit.region_id,
     date: visit.visited_at_start,
     sequence: visit.sequence,
-    longitude: point?.longitude ?? place?.coordinates?.longitude ?? region?.center?.longitude,
-    latitude: point?.latitude ?? place?.coordinates?.latitude ?? region?.center?.latitude,
+    longitude:
+      point?.longitude ??
+      place?.coordinates?.longitude ??
+      region?.center?.longitude,
+    latitude:
+      point?.latitude ??
+      place?.coordinates?.latitude ??
+      region?.center?.latitude,
     postIds: visit.post_ids || [],
     food: (visit.food_ids || []).map(compactEntity).filter(Boolean),
     confidence: visit.confidence,
@@ -133,10 +155,16 @@ function compactVisit(visit, role = "anchor") {
     evidenceType: visit.evidence_type,
     locationPrecision: visit.location_precision,
     evidence: visit.evidence || [],
+    contextNote:
+      displayRole === "context" && role === "anchor"
+        ? "这条记录提供同行背景，但没有发现明确的饮食内容。"
+        : null,
   };
 }
 
-const publicPosts = Object.fromEntries(posts.map((post) => [post.id, compactPost(post)]));
+const publicPosts = Object.fromEntries(
+  posts.map((post) => [post.id, compactPost(post)]),
+);
 const publicPlaces = Object.fromEntries(
   places.map((place) => [
     place.id,
@@ -171,7 +199,9 @@ const publicRegions = Object.fromEntries(
 );
 
 const publicTrips = trips.map((trip) => {
-  const mainVisits = trip.visit_ids.map((id) => compactVisit(visitMap.get(id))).filter(Boolean);
+  const mainVisits = trip.visit_ids
+    .map((id) => compactVisit(visitMap.get(id)))
+    .filter(Boolean);
   const candidateVisits = candidates
     .filter((item) => item.trip_id === trip.id)
     .map((item) => compactVisit(visitMap.get(item.visit_id), "candidate"))
@@ -207,10 +237,13 @@ const publicTrips = trips.map((trip) => {
     confidence: trip.confidence,
     confidenceLabel: confidenceLabel(trip.confidence),
     uncertaintyNote: trip.uncertainty_note,
-    clusterMethod: trip.cluster_method,
-    qualityFlags: trip.quality_flags,
     highlights: trip.highlights,
-    visits: [...mainVisits, ...regionVisits, ...candidateVisits, ...contextPoints],
+    visits: [
+      ...mainVisits,
+      ...regionVisits,
+      ...candidateVisits,
+      ...contextPoints,
+    ],
   };
 });
 
@@ -233,16 +266,24 @@ for (const post of posts) {
 
 const facets = [...facetBuckets.values()]
   .sort((a, b) => b.count - a.count)
-  .filter((item, index, all) => all.findIndex((x) => x.type === item.type) <= index)
+  .filter(
+    (item, index, all) => all.findIndex((x) => x.type === item.type) <= index,
+  )
   .slice(0, 240);
 
-const years = [...new Set(publicTrips.map((trip) => new Date(trip.startDate).getFullYear()))].sort();
+const years = [
+  ...new Set(publicTrips.map((trip) => new Date(trip.startDate).getFullYear())),
+].sort();
+const postDates = posts
+  .map((post) => post.created_at)
+  .filter(Boolean)
+  .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 const atlas = {
   manifest: {
-    version: "final_data_audit_v1",
+    version: "2026年7月封版",
     generatedAt: "2026-07-24",
-    coverageStart: posts.at(-1)?.created_at || "2010-10-06",
-    coverageEnd: posts[0]?.created_at || "2026-07-24",
+    coverageStart: postDates[0] || "2010-10-06",
+    coverageEnd: postDates.at(-1) || "2026-07-24",
     counts: {
       posts: posts.length,
       trips: trips.length,
@@ -261,7 +302,11 @@ const atlas = {
 };
 
 await mkdir(outputDir, { recursive: true });
-await writeFile(path.join(outputDir, "atlas.json"), JSON.stringify(atlas), "utf8");
+await writeFile(
+  path.join(outputDir, "atlas.json"),
+  JSON.stringify(atlas),
+  "utf8",
+);
 console.log(
   `Public projection built: ${publicTrips.length} trips, ${Object.keys(publicPosts).length} posts`,
 );

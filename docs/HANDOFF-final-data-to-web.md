@@ -3,6 +3,13 @@
 更新时间：2026-07-24
 数据审查版本：`final_data_audit_v1`
 
+> 2026-07-24 媒体补丁：`stage1_missing_13_merge_v1` 已修复 13 个未结构化的阶段一结果。  
+> 补丁后阶段二成功 7,573、`not_requested` 4,911，阶段一缺失为 0。  
+> Entity、Place、Visit、Trip 均未改变。补丁审计见
+> `data-processing/data/analysis/stage1_missing_13_merge_v1/`。  
+> 补丁后 Post SHA-256：
+> `3edd711c0c106cbd5aa7785addc338f3b04266c8d9a6ffdf899b854641ee50da`。
+
 ## 1. 交接结论
 
 当前数据已经适合进入网页构建阶段。
@@ -212,7 +219,7 @@ Trip 成员关系在生成叙事前已经冻结，LLM 只负责标题、副标�
 |---|---|
 | repaired source | `8d867d412726a266dc0290667735f5d1aae13fbc149a67f8a289c7f5d93bc2b2` |
 | POI v5 | `d3d3b70a97b31159496659583227d41aeaa9a785b8b787f9aef6373e2226e1b4` |
-| final Posts | `fd40ab2235eb5a237b18918e955f18b704aa2a14cccc5e1ae89e32e745f20506` |
+| final Posts | `3edd711c0c106cbd5aa7785addc338f3b04266c8d9a6ffdf899b854641ee50da`（媒体补丁后） |
 | Entities | `22af88e24be7757564c89693361638e7db9d6ecec018f196f3ff60a5445b2229` |
 | Places | `9bafff3960bd20fcca6afadfdd6bbc7bcb87d2c3860a579a9813ae3de1c5eda9` |
 | Regions | `903c803f05f94b1e6dedbbbb74c21997814c5f5c97c19a5734e3c2c929a0f017` |
