@@ -1,0 +1,267 @@
+import { createReadStream } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
+import path from "node:path";
+
+const sourceDir = path.resolve(process.cwd(), "..", "data-processing", "data");
+const outputDir = path.resolve(process.cwd(), "public", "data");
+
+async function readJsonl(file) {
+  const rows = [];
+  const input = createReadStream(path.join(sourceDir, file), { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  for await (const line of lines) {
+    if (line.trim()) rows.push(JSON.parse(line));
+  }
+  return rows;
+}
+
+const [trips, visits, places, regions, posts, entities, candidates, contexts] =
+  await Promise.all([
+    readJsonl("trips_with_narratives_v2.jsonl"),
+    readJsonl("visits_with_trips_v1.jsonl"),
+    readJsonl("places_v1.jsonl"),
+    readJsonl("regions_v1.jsonl"),
+    readJsonl("vlm_results_v2_with_poi_mentions_v1.jsonl"),
+    readJsonl("entities_v1.jsonl"),
+    readJsonl("trip_membership_candidates_v1.jsonl"),
+    readJsonl("trip_context_refs_v1.jsonl"),
+  ]);
+
+const entityMap = new Map(entities.map((item) => [item.entity_id, item]));
+const placeMap = new Map(places.map((item) => [item.id, item]));
+const regionMap = new Map(regions.map((item) => [item.id, item]));
+const visitMap = new Map(visits.map((item) => [item.id, item]));
+const postMap = new Map(posts.map((item) => [item.id, item]));
+
+function confidenceLabel(value) {
+  if (value >= 0.85) return "较高";
+  if (value >= 0.65) return "中等";
+  return "较低";
+}
+
+function compactEntity(id) {
+  const entity = entityMap.get(id);
+  if (!entity) return null;
+  return {
+    id,
+    type: entity.entity_type,
+    name: entity.canonical_name,
+    count: entity.post_count,
+  };
+}
+
+function collectAnalysis(post) {
+  const summaries = [];
+  const labels = [];
+  for (const media of post.vlm_analysis || []) {
+    const stage1 = media.stage1;
+    const analysis = media.stage2?.analysis;
+    if (stage1?.description) {
+      summaries.push({
+        index: media.pic_index,
+        description: stage1.description,
+        confidence: stage1.confidence,
+        source: "图片分析",
+      });
+    }
+    if (!analysis) continue;
+    for (const [type, values] of [
+      ["菜品", analysis.dish_candidates],
+      ["食物品类", analysis.food_categories],
+      ["食材", analysis.ingredients_visible],
+      ["烹饪方式", analysis.cooking_methods],
+      ["菜系", analysis.cuisine_style],
+    ]) {
+      for (const item of values || []) {
+        if (item?.name) {
+          labels.push({
+            type,
+            name: item.name,
+            confidence: item.confidence ?? 0.5,
+            source: item.source || "image",
+          });
+        }
+      }
+    }
+  }
+  return { summaries: summaries.slice(0, 4), labels: labels.slice(0, 24) };
+}
+
+function compactPost(post) {
+  const analysis = collectAnalysis(post);
+  return {
+    id: post.id,
+    createdAt: post.created_at,
+    url: post.url,
+    content: post.content,
+    hasMedia: (post.vlm_analysis || []).length > 0,
+    analysis: analysis.summaries,
+    labels: analysis.labels,
+    mentions: (post.mentions || []).map((mention) => ({
+      id: mention.mention_id,
+      entityId: mention.entity_id,
+      type: mention.entity_type,
+      text: mention.text,
+      start: mention.start,
+      end: mention.end,
+      confidence: mention.confidence,
+      linkStatus: mention.link_status,
+      placeRefs: mention.place_refs || [],
+    })),
+  };
+}
+
+function compactVisit(visit, role = "anchor") {
+  const point = visit.points?.[0];
+  const place = visit.place_id ? placeMap.get(visit.place_id) : null;
+  const region = visit.region_id ? regionMap.get(visit.region_id) : null;
+  return {
+    id: visit.id,
+    role,
+    name: place?.canonical_name || region?.name || point?.name || "位置未命名",
+    placeId: visit.place_id,
+    regionId: visit.region_id,
+    date: visit.visited_at_start,
+    sequence: visit.sequence,
+    longitude: point?.longitude ?? place?.coordinates?.longitude ?? region?.center?.longitude,
+    latitude: point?.latitude ?? place?.coordinates?.latitude ?? region?.center?.latitude,
+    postIds: visit.post_ids || [],
+    food: (visit.food_ids || []).map(compactEntity).filter(Boolean),
+    confidence: visit.confidence,
+    confidenceLabel: confidenceLabel(visit.confidence),
+    evidenceType: visit.evidence_type,
+    locationPrecision: visit.location_precision,
+    evidence: visit.evidence || [],
+  };
+}
+
+const publicPosts = Object.fromEntries(posts.map((post) => [post.id, compactPost(post)]));
+const publicPlaces = Object.fromEntries(
+  places.map((place) => [
+    place.id,
+    {
+      id: place.id,
+      name: place.canonical_name,
+      type: place.place_type,
+      address: place.address,
+      province: place.province,
+      city: place.city,
+      district: place.district,
+      coordinates: place.coordinates,
+      postIds: place.source_post_ids || [],
+      qualityFlags: place.quality_flags || [],
+    },
+  ]),
+);
+const publicRegions = Object.fromEntries(
+  regions.map((region) => [
+    region.id,
+    {
+      id: region.id,
+      name: region.name,
+      province: region.province,
+      city: region.city,
+      district: region.district,
+      center: region.center,
+      precision: region.precision,
+      postIds: region.source_post_ids || [],
+    },
+  ]),
+);
+
+const publicTrips = trips.map((trip) => {
+  const mainVisits = trip.visit_ids.map((id) => compactVisit(visitMap.get(id))).filter(Boolean);
+  const candidateVisits = candidates
+    .filter((item) => item.trip_id === trip.id)
+    .map((item) => compactVisit(visitMap.get(item.visit_id), "candidate"))
+    .filter(Boolean);
+  const regionVisits = trip.region_visit_ids
+    .map((id) => compactVisit(visitMap.get(id), "region_only"))
+    .filter(Boolean);
+  const contextPoints = contexts
+    .filter((item) => item.trip_id === trip.id && item.display_point)
+    .map((item, index) => ({
+      id: `${trip.id}-context-${index}`,
+      role: "context",
+      name: item.display_point.name || "上下文位置",
+      longitude: item.display_point.longitude,
+      latitude: item.display_point.latitude,
+      postIds: [item.post_id],
+      relation: item.relation,
+    }));
+  return {
+    id: trip.id,
+    title: trip.title,
+    subtitle: trip.subtitle,
+    summary: trip.summary,
+    kind: trip.trip_kind,
+    startDate: trip.start_date,
+    endDate: trip.end_date,
+    datePrecision: trip.date_precision,
+    regions: trip.region_labels,
+    visitCount: trip.visit_ids.length,
+    postCount: trip.post_ids.length,
+    postIds: trip.post_ids,
+    themeFoods: trip.theme_food_ids.map(compactEntity).filter(Boolean),
+    confidence: trip.confidence,
+    confidenceLabel: confidenceLabel(trip.confidence),
+    uncertaintyNote: trip.uncertainty_note,
+    clusterMethod: trip.cluster_method,
+    qualityFlags: trip.quality_flags,
+    highlights: trip.highlights,
+    visits: [...mainVisits, ...regionVisits, ...candidateVisits, ...contextPoints],
+  };
+});
+
+const facetBuckets = new Map();
+for (const post of posts) {
+  for (const label of collectAnalysis(post).labels) {
+    if (label.confidence < 0.75) continue;
+    const key = `${label.type}:${label.name.trim()}`;
+    const current = facetBuckets.get(key) || {
+      id: key,
+      type: label.type,
+      name: label.name.trim(),
+      count: 0,
+      mappingMethod: "受控原标签精确映射",
+    };
+    current.count += 1;
+    facetBuckets.set(key, current);
+  }
+}
+
+const facets = [...facetBuckets.values()]
+  .sort((a, b) => b.count - a.count)
+  .filter((item, index, all) => all.findIndex((x) => x.type === item.type) <= index)
+  .slice(0, 240);
+
+const years = [...new Set(publicTrips.map((trip) => new Date(trip.startDate).getFullYear()))].sort();
+const atlas = {
+  manifest: {
+    version: "final_data_audit_v1",
+    generatedAt: "2026-07-24",
+    coverageStart: posts.at(-1)?.created_at || "2010-10-06",
+    coverageEnd: posts[0]?.created_at || "2026-07-24",
+    counts: {
+      posts: posts.length,
+      trips: trips.length,
+      visits: visits.length,
+      places: places.length,
+      cities: new Set(places.map((place) => place.city).filter(Boolean)).size,
+    },
+    years,
+  },
+  trips: publicTrips,
+  posts: publicPosts,
+  places: publicPlaces,
+  regions: publicRegions,
+  entities: entities.map(compactEntity).filter(Boolean),
+  facets,
+};
+
+await mkdir(outputDir, { recursive: true });
+await writeFile(path.join(outputDir, "atlas.json"), JSON.stringify(atlas), "utf8");
+console.log(
+  `Public projection built: ${publicTrips.length} trips, ${Object.keys(publicPosts).length} posts`,
+);
