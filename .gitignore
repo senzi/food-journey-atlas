@@ -1,0 +1,24 @@
+# Secrets
+data-processing/.env
+.env
+
+# Generated and source data, API/LLM caches, audit outputs
+data-processing/data/
+
+# JavaScript dependencies and build outputs
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Local tooling and logs
+.codex/
+*.log
+*.tmp
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
