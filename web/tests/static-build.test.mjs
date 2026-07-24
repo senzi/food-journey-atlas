@@ -26,7 +26,8 @@ test("static client contains the journey experience", async () => {
   assert.ok(clientAsset, "client JavaScript asset was not built");
   const clientCode = await readFile(new URL(clientAsset, assetsUrl), "utf8");
   assert.match(clientCode, /复刻一段美食旅程/);
-  assert.match(clientCode, /帮我填入条件/);
+  assert.match(clientCode, /理解并生成旅程/);
+  assert.match(clientCode, /2025年 厦门市 · 综合寻味/);
 });
 
 test("journey-query handler validates input before calling the model", async () => {

@@ -1451,6 +1451,27 @@ mark {
   border-radius: 0;
   font: 13px/1.65 var(--sans);
 }
+.query-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+.query-examples button {
+  padding: 6px 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: left;
+}
+.query-examples button:hover,
+.query-examples button:focus-visible {
+  color: var(--red);
+  border-color: var(--red);
+  outline: none;
+}
 .query-button {
   width: 100%;
   margin-top: 10px;

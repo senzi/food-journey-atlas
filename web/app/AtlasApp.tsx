@@ -71,10 +71,10 @@ type JourneyQueryResponse =
   | {
       status: "parsed";
       conditions: {
-        regionKey?: string;
-        year?: number;
+        regionKey?: string | null;
+        year?: number | null;
         nodeCount?: 2 | 3 | 5 | 7;
-        keyword?: string;
+        keyword?: string | null;
         includePossible?: boolean;
       };
       summary: string;
@@ -83,6 +83,21 @@ type JourneyQueryResponse =
       status: "needs_clarification" | "irrelevant";
       message: string;
     };
+
+const journeyQueryExamples = [
+  {
+    label: "不限地区时间 · 川菜",
+    text: "不限地区和时间，想吃川菜",
+  },
+  {
+    label: "2025年 厦门市 · 综合寻味",
+    text: "想看看 2025 年在厦门市的综合寻味旅程",
+  },
+  {
+    label: "不限地区 · 牛肉",
+    text: "不限地区，想吃牛肉",
+  },
+];
 
 function isDomesticCoordinate(longitude?: number, latitude?: number) {
   return (
@@ -1640,13 +1655,34 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       setQueryResult(payload);
       if (payload.status === "parsed") {
         const conditions = payload.conditions;
-        if (conditions.regionKey !== undefined) setRegion(conditions.regionKey);
-        if (conditions.year !== undefined) setYear(String(conditions.year));
-        if (conditions.nodeCount !== undefined)
-          setCount(String(conditions.nodeCount));
-        if (conditions.keyword !== undefined) setKeyword(conditions.keyword);
-        if (conditions.includePossible !== undefined)
-          setIncludePossible(conditions.includePossible);
+        const nextConditions = {
+          region:
+            conditions.regionKey !== undefined
+              ? conditions.regionKey ?? ""
+              : region,
+          year:
+            conditions.year !== undefined
+              ? conditions.year === null
+                ? ""
+                : String(conditions.year)
+              : year,
+          count:
+            conditions.nodeCount !== undefined
+              ? String(conditions.nodeCount)
+              : count,
+          keyword:
+            conditions.keyword !== undefined
+              ? conditions.keyword ?? ""
+              : keyword,
+          includePossible:
+            conditions.includePossible ?? includePossible,
+        };
+        setRegion(nextConditions.region);
+        setYear(nextConditions.year);
+        setCount(nextConditions.count);
+        setKeyword(nextConditions.keyword);
+        setIncludePossible(nextConditions.includePossible);
+        createJourney(nextConditions);
       }
     } catch (error) {
       setQueryError(
@@ -1668,8 +1704,22 @@ function Recreate({ atlas }: { atlas: Atlas }) {
     return copy;
   }
 
-  function createJourney() {
-    const q = keyword.trim().toLowerCase();
+  function createJourney(
+    overrides: {
+      region?: string;
+      year?: string;
+      count?: string;
+      keyword?: string;
+      includePossible?: boolean;
+    } = {},
+  ) {
+    const activeRegion = overrides.region ?? region;
+    const activeYear = overrides.year ?? year;
+    const activeCount = overrides.count ?? count;
+    const activeKeyword = overrides.keyword ?? keyword;
+    const activeIncludePossible =
+      overrides.includePossible ?? includePossible;
+    const q = activeKeyword.trim().toLowerCase();
     const matches = atlas.trips
       .flatMap((trip) =>
         trip.visits.map((visit: any) => {
@@ -1687,14 +1737,16 @@ function Recreate({ atlas }: { atlas: Atlas }) {
         (visit, index, all) =>
           all.findIndex((item) => item.id === visit.id) === index,
       )
-      .filter((visit) => includePossible || visit.role === "anchor")
+      .filter((visit) => activeIncludePossible || visit.role === "anchor")
       .filter(
         (visit) =>
           Number.isFinite(visit.longitude) && Number.isFinite(visit.latitude),
       )
-      .filter((visit) => !region || visit.regionKey === region)
+      .filter((visit) => !activeRegion || visit.regionKey === activeRegion)
       .filter(
-        (visit) => !year || String(new Date(visit.date).getFullYear()) === year,
+        (visit) =>
+          !activeYear ||
+          String(new Date(visit.date).getFullYear()) === activeYear,
       )
       .filter(
         (visit) =>
@@ -1709,9 +1761,9 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       setSelectedId("");
       return;
     }
-    const wanted = Math.max(2, Number(count));
-    const radiusKm = region
-      ? region.startsWith("海外地区::")
+    const wanted = Math.max(2, Number(activeCount));
+    const radiusKm = activeRegion
+      ? activeRegion.startsWith("海外地区::")
         ? 180
         : 260
       : 320;
@@ -1774,7 +1826,7 @@ function Recreate({ atlas }: { atlas: Atlas }) {
           <div className="natural-query">
             <p className="kicker">先说说你的想法</p>
             <label>
-              例如“想看看 2024 年在成都吃川菜的三个点”
+              可以自己写，也可以从下面选一句开始
               <textarea
                 value={queryText}
                 onChange={(event) => setQueryText(event.target.value)}
@@ -1783,19 +1835,34 @@ function Recreate({ atlas }: { atlas: Atlas }) {
                 maxLength={500}
               />
             </label>
+            <div className="query-examples" aria-label="输入示例">
+              {journeyQueryExamples.map((example) => (
+                <button
+                  type="button"
+                  key={example.label}
+                  onClick={() => {
+                    setQueryText(example.text);
+                    setQueryResult(null);
+                    setQueryError("");
+                  }}
+                >
+                  {example.label}
+                </button>
+              ))}
+            </div>
             <button
               type="button"
               className="button query-button"
               onClick={understandQuery}
               disabled={isUnderstanding}
             >
-              {isUnderstanding ? "正在理解…" : "帮我填入条件"}
+              {isUnderstanding ? "正在理解并生成…" : "理解并生成旅程"}
             </button>
             {queryResult?.status === "parsed" && (
               <div className="query-feedback understood">
-                <strong>已经填好了</strong>
+                <strong>已经按这些条件生成</strong>
                 <span>{queryResult.summary}</span>
-                <small>下面的条件仍然可以手动修改，确认后再生成旅程。</small>
+                <small>下面的条件仍然可以手动修改，再换一组。</small>
               </div>
             )}
             {queryResult?.status !== "parsed" && queryResult && (
@@ -1917,7 +1984,7 @@ function Recreate({ atlas }: { atlas: Atlas }) {
                 <button
                   type="button"
                   className="reroll"
-                  onClick={createJourney}
+                  onClick={() => createJourney()}
                 >
                   换一组 ↻
                 </button>

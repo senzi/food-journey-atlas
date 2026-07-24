@@ -20,10 +20,10 @@ type JourneyQueryRequest = {
 };
 
 type JourneyConditions = {
-  regionKey?: string;
-  year?: number;
+  regionKey?: string | null;
+  year?: number | null;
   nodeCount?: 2 | 3 | 5 | 7;
-  keyword?: string;
+  keyword?: string | null;
   includePossible?: boolean;
 };
 
@@ -110,11 +110,11 @@ function buildPrompt(options: ReturnType<typeof normalizeOptions>) {
   return `你负责把一句自然语言转换成“美食旅程筛选条件”。只理解筛选意图，不回答知识问题。
 
 允许的字段和可选项：
-- regionKey：只能从以下地区 key 中选择；没有明确地区就省略。
+- regionKey：只能从以下地区 key 中选择；用户明确说“不限地区”时返回 null，没有谈及地区时省略。
 ${regionChoices.map((item) => `  - ${item}`).join("\n")}
-- year：只能选择 ${options.years.join("、")}；没有明确年份就省略。
+- year：只能选择 ${options.years.join("、")}；用户明确说“不限时间/不限年份”时返回 null，没有谈及年份时省略。
 - nodeCount：只能选择 ${NODE_COUNTS.join("、")}。用户说“两站/三个点”等可换算；没有明确数量就省略。
-- keyword：只能从以下已收录词中选择一个；若用户说的是清楚的具体菜名或食材、但不在列表中，可保留用户原词；不要把泛泛的“好吃”“美食”当关键词。
+- keyword：只能从以下已收录词中选择一个；若用户说的是清楚的具体菜名或食材、但不在列表中，可保留用户原词；用户明确说“综合寻味/不限食物”时返回 null；不要把泛泛的“好吃”“美食”当关键词。
 ${keywordChoices.map((item) => `  - ${item}`).join("\n")}
 - includePossible：只有用户明确表示“也看可能地点、低可信地点、候选地点”时才为 true；明确只看可靠记录时为 false；否则省略。
 
@@ -126,7 +126,7 @@ ${keywordChoices.map((item) => `  - ${item}`).join("\n")}
 5. 不得自行发明地区 key、年份或节点数量。
 
 只返回一个 JSON 对象，格式三选一：
-{"status":"parsed","conditions":{"regionKey":"可选","year":2024,"nodeCount":3,"keyword":"可选","includePossible":false},"summary":"用自然中文简要复述已理解的条件"}
+{"status":"parsed","conditions":{"regionKey":null,"year":2024,"nodeCount":3,"keyword":"川菜","includePossible":false},"summary":"用自然中文简要复述已理解的条件"}
 {"status":"needs_clarification","message":"一句简短、可直接回答的追问"}
 {"status":"irrelevant","message":"这句话和旅程条件关系不大，可以换一种说法。"}
 不要输出 Markdown，不要解释规则。`;
@@ -175,7 +175,9 @@ function validateResult(
       ? (result.conditions as Record<string, unknown>)
       : {};
   const conditions: JourneyConditions = {};
-  if (typeof raw.regionKey === "string") {
+  if (raw.regionKey === null) {
+    conditions.regionKey = null;
+  } else if (typeof raw.regionKey === "string") {
     if (!options.regions.some((item) => item.key === raw.regionKey)) {
       return {
         status: "needs_clarification",
@@ -184,7 +186,9 @@ function validateResult(
     }
     conditions.regionKey = raw.regionKey;
   }
-  if (typeof raw.year === "number") {
+  if (raw.year === null) {
+    conditions.year = null;
+  } else if (typeof raw.year === "number") {
     if (!options.years.includes(raw.year)) {
       return {
         status: "needs_clarification",
@@ -202,7 +206,9 @@ function validateResult(
     }
     conditions.nodeCount = raw.nodeCount as JourneyConditions["nodeCount"];
   }
-  if (typeof raw.keyword === "string" && raw.keyword.trim()) {
+  if (raw.keyword === null) {
+    conditions.keyword = null;
+  } else if (typeof raw.keyword === "string" && raw.keyword.trim()) {
     conditions.keyword = raw.keyword.trim().slice(0, 40);
   }
   if (typeof raw.includePossible === "boolean") {
