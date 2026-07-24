@@ -1,10 +1,84 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 
 const sourceDir = path.resolve(process.cwd(), "..", "data-processing", "data");
 const outputDir = path.resolve(process.cwd(), "public", "data");
+const atlasPackageDir = path.resolve(
+  process.cwd(),
+  "node_modules",
+  "cn-atlas",
+);
+const provinceGeoJson = JSON.parse(
+  readFileSync(path.join(atlasPackageDir, "provinces.json"), "utf8"),
+);
+const prefectureGeoJson = JSON.parse(
+  readFileSync(path.join(atlasPackageDir, "prefectures.json"), "utf8"),
+);
+
+function pointInRing(longitude, latitude, ring) {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const [x, y] = ring[index];
+    const [previousX, previousY] = ring[previous];
+    const crosses =
+      y > latitude !== previousY > latitude &&
+      longitude <
+        ((previousX - x) * (latitude - y)) / (previousY - y || 1e-12) + x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function geometryContainsPoint(geometry, longitude, latitude) {
+  const polygons =
+    geometry?.type === "Polygon"
+      ? [geometry.coordinates]
+      : geometry?.type === "MultiPolygon"
+        ? geometry.coordinates
+        : [];
+  return polygons.some(
+    (polygon) =>
+      polygon[0] &&
+      pointInRing(longitude, latitude, polygon[0]) &&
+      !polygon
+        .slice(1)
+        .some((hole) => pointInRing(longitude, latitude, hole)),
+  );
+}
+
+const inferredAdminCache = new Map();
+function inferAdmin(longitude, latitude) {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  const cacheKey = `${longitude.toFixed(4)},${latitude.toFixed(4)}`;
+  if (inferredAdminCache.has(cacheKey)) return inferredAdminCache.get(cacheKey);
+  const cityFeature = prefectureGeoJson.features.find((feature) =>
+    geometryContainsPoint(feature.geometry, longitude, latitude),
+  );
+  const cityCode = String(cityFeature?.properties?.id || "");
+  const provinceFeature =
+    provinceGeoJson.features.find(
+      (feature) =>
+        cityCode &&
+        String(feature.properties?.id || "").slice(0, 2) ===
+          cityCode.slice(0, 2),
+    ) ||
+    provinceGeoJson.features.find((feature) =>
+      geometryContainsPoint(feature.geometry, longitude, latitude),
+    );
+  const inferred = provinceFeature
+    ? {
+        province: provinceFeature.properties?.["地名"] || "",
+        city:
+          cityFeature?.properties?.["地名"] ||
+          provinceFeature.properties?.["地名"] ||
+          "",
+      }
+    : null;
+  inferredAdminCache.set(cacheKey, inferred);
+  return inferred;
+}
 
 async function readJsonl(file) {
   const rows = [];
@@ -126,10 +200,33 @@ function hasFoodEvidence(visit) {
   });
 }
 
-function compactVisit(visit, role = "anchor") {
+function inferAdminFromText(text) {
+  if (/(?:北京|京城|海淀|朝阳)/.test(text)) {
+    return { province: "北京市", city: "北京市" };
+  }
+  if (/(?:台湾|台北)/.test(text)) {
+    return { province: "台湾省", city: "台北市" };
+  }
+  return null;
+}
+
+function compactVisit(visit, role = "anchor", tripTitle = "") {
   const point = visit.points?.[0];
   const place = visit.place_id ? placeMap.get(visit.place_id) : null;
   const region = visit.region_id ? regionMap.get(visit.region_id) : null;
+  const longitude =
+    point?.longitude ??
+    place?.coordinates?.longitude ??
+    region?.center?.longitude;
+  const latitude =
+    point?.latitude ?? place?.coordinates?.latitude ?? region?.center?.latitude;
+  const inferredAdmin =
+    !place?.province && !region?.province
+      ? inferAdmin(longitude, latitude) ||
+        inferAdminFromText(
+          `${place?.canonical_name || point?.name || ""} ${tripTitle}`,
+        )
+      : null;
   const displayRole =
     role === "anchor" && !hasFoodEvidence(visit) ? "context" : role;
   return {
@@ -140,14 +237,27 @@ function compactVisit(visit, role = "anchor") {
     regionId: visit.region_id,
     date: visit.visited_at_start,
     sequence: visit.sequence,
-    longitude:
-      point?.longitude ??
-      place?.coordinates?.longitude ??
-      region?.center?.longitude,
-    latitude:
-      point?.latitude ??
-      place?.coordinates?.latitude ??
-      region?.center?.latitude,
+    longitude,
+    latitude,
+    province:
+      place?.province ||
+      region?.province ||
+      point?.province ||
+      inferredAdmin?.province ||
+      "",
+    city:
+      place?.city ||
+      region?.city ||
+      point?.city ||
+      inferredAdmin?.city ||
+      "",
+    district: place?.district || region?.district || point?.district || "",
+    address: place?.address || point?.address || "",
+    coordinateSource:
+      visit.coordinate_source ||
+      place?.coordinate_precision ||
+      region?.precision ||
+      "",
     postIds: visit.post_ids || [],
     food: (visit.food_ids || []).map(compactEntity).filter(Boolean),
     confidence: visit.confidence,
@@ -200,26 +310,41 @@ const publicRegions = Object.fromEntries(
 
 const publicTrips = trips.map((trip) => {
   const mainVisits = trip.visit_ids
-    .map((id) => compactVisit(visitMap.get(id)))
+    .map((id) => compactVisit(visitMap.get(id), "anchor", trip.title))
     .filter(Boolean);
   const candidateVisits = candidates
     .filter((item) => item.trip_id === trip.id)
-    .map((item) => compactVisit(visitMap.get(item.visit_id), "candidate"))
+    .map((item) =>
+      compactVisit(visitMap.get(item.visit_id), "candidate", trip.title),
+    )
     .filter(Boolean);
   const regionVisits = trip.region_visit_ids
-    .map((id) => compactVisit(visitMap.get(id), "region_only"))
+    .map((id) => compactVisit(visitMap.get(id), "region_only", trip.title))
     .filter(Boolean);
   const contextPoints = contexts
     .filter((item) => item.trip_id === trip.id && item.display_point)
-    .map((item, index) => ({
-      id: `${trip.id}-context-${index}`,
-      role: "context",
-      name: item.display_point.name || "上下文位置",
-      longitude: item.display_point.longitude,
-      latitude: item.display_point.latitude,
-      postIds: [item.post_id],
-      relation: item.relation,
-    }));
+    .map((item, index) => {
+      const inferredAdmin =
+        inferAdmin(
+          item.display_point.longitude,
+          item.display_point.latitude,
+        ) ||
+        inferAdminFromText(
+          `${item.display_point.name || ""} ${trip.title}`,
+        );
+      return {
+        id: `${trip.id}-context-${index}`,
+        role: "context",
+        name: item.display_point.name || "上下文位置",
+        longitude: item.display_point.longitude,
+        latitude: item.display_point.latitude,
+        province: item.display_point.province || inferredAdmin?.province || "",
+        city: item.display_point.city || inferredAdmin?.city || "",
+        district: item.display_point.district || "",
+        postIds: [item.post_id],
+        relation: item.relation,
+      };
+    });
   return {
     id: trip.id,
     title: trip.title,
@@ -301,10 +426,127 @@ const atlas = {
   facets,
 };
 
+function geometryBounds(geometry) {
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  function visit(value) {
+    if (
+      Array.isArray(value) &&
+      value.length >= 2 &&
+      typeof value[0] === "number" &&
+      typeof value[1] === "number"
+    ) {
+      bounds[0] = Math.min(bounds[0], value[0]);
+      bounds[1] = Math.min(bounds[1], value[1]);
+      bounds[2] = Math.max(bounds[2], value[0]);
+      bounds[3] = Math.max(bounds[3], value[1]);
+      return;
+    }
+    if (Array.isArray(value)) value.forEach(visit);
+  }
+  if (geometry?.coordinates) visit(geometry.coordinates);
+  return bounds;
+}
+
+function compactMapFeature(feature, level) {
+  return {
+    name: feature.properties?.["地名"] || feature.properties?.name || "",
+    level,
+    geometry: feature.geometry,
+  };
+}
+
+const usedProvinces = new Set(
+  publicTrips.flatMap((trip) =>
+    trip.visits.map((visit) => visit.province).filter(Boolean),
+  ),
+);
+const usedCities = new Set(
+  publicTrips.flatMap((trip) =>
+    trip.visits.map((visit) => visit.city).filter(Boolean),
+  ),
+);
+const usedDistricts = new Set(
+  publicTrips.flatMap((trip) =>
+    trip.visits.map((visit) => visit.district).filter(Boolean),
+  ),
+);
+const riverGeoJson = JSON.parse(
+  readFileSync(
+    path.resolve(
+      process.cwd(),
+      "scripts",
+      "vendor",
+      "ne_50m_rivers_lake_centerlines.json",
+    ),
+    "utf8",
+  ),
+);
+const municipalityFeatures = [
+  "北京市.json",
+  "上海市.json",
+  "天津市.json",
+  "重庆市.json",
+].flatMap((file) => {
+  const collection = JSON.parse(
+    readFileSync(
+      path.resolve(
+        process.cwd(),
+        "scripts",
+        "vendor",
+        "municipalities",
+        file,
+      ),
+      "utf8",
+    ),
+  );
+  return collection.features;
+});
+const chinaBounds = [72, 17, 136, 55];
+const intersectsChina = (feature) => {
+  const bounds = geometryBounds(feature.geometry);
+  return !(
+    bounds[2] < chinaBounds[0] ||
+    bounds[0] > chinaBounds[2] ||
+    bounds[3] < chinaBounds[1] ||
+    bounds[1] > chinaBounds[3]
+  );
+};
+const basemap = {
+  source:
+    "行政区划：cn-atlas 2023；河流：Natural Earth 1:50m（CC0）",
+  features: [
+    ...provinceGeoJson.features
+      .filter((feature) => usedProvinces.has(feature.properties?.["地名"]))
+      .map((feature) => compactMapFeature(feature, "province")),
+    ...prefectureGeoJson.features
+      .filter((feature) => usedCities.has(feature.properties?.["地名"]))
+      .map((feature) => compactMapFeature(feature, "city")),
+    ...municipalityFeatures
+      .filter((feature) => usedDistricts.has(feature.properties?.name))
+      .map((feature) => compactMapFeature(feature, "district")),
+  ],
+  rivers: riverGeoJson.features
+    .filter(
+      (feature) =>
+        feature.geometry &&
+        feature.properties?.scalerank <= 6 &&
+        intersectsChina(feature),
+    )
+    .map((feature) => ({
+      name: feature.properties?.name || "",
+      geometry: feature.geometry,
+    })),
+};
+
 await mkdir(outputDir, { recursive: true });
 await writeFile(
   path.join(outputDir, "atlas.json"),
   JSON.stringify(atlas),
+  "utf8",
+);
+await writeFile(
+  path.join(outputDir, "china-basemap.json"),
+  JSON.stringify(basemap),
   "utf8",
 );
 console.log(

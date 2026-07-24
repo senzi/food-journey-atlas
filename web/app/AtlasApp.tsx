@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 
 type Atlas = {
@@ -40,6 +47,123 @@ type RegionOption = {
   count: number;
 };
 
+function isDomesticCoordinate(longitude?: number, latitude?: number) {
+  return (
+    Number.isFinite(longitude) &&
+    Number.isFinite(latitude) &&
+    longitude! >= 73 &&
+    longitude! <= 136 &&
+    latitude! >= 18 &&
+    latitude! <= 54
+  );
+}
+
+function destinationFromTitle(title = "") {
+  return (
+    title
+      .replace(
+        /(?:一日|两日|三日|数日|多日)?(?:寻味|饮食|美食旅程|旅程|记录).*$/,
+        "",
+      )
+      .trim() || "地点待确认"
+  );
+}
+
+function regionOptionForVisit(atlas: Atlas, trip: any, visit: any) {
+  const location = visit.placeId
+    ? atlas.places[visit.placeId]
+    : visit.regionId
+      ? atlas.regions[visit.regionId]
+      : null;
+  let province = visit.province || location?.province || "";
+  let city = visit.city || location?.city || "";
+  if (!province && !city) {
+    const domestic = isDomesticCoordinate(visit.longitude, visit.latitude);
+    province = domestic ? "国内其他地区" : "海外地区";
+    city = destinationFromTitle(trip.title);
+  } else {
+    province = province || city;
+    city = city || province;
+  }
+  return {
+    key: `${province}::${city}`,
+    province,
+    city,
+    label: city === province ? province : city,
+    count: 0,
+  };
+}
+
+type Basemap = {
+  source: string;
+  features: Array<{ name: string; level: string; geometry: any }>;
+  rivers: Array<{ name: string; geometry: any }>;
+};
+
+let basemapRequest: Promise<Basemap> | null = null;
+
+function loadBasemap() {
+  if (!basemapRequest) {
+    basemapRequest = fetch("/data/china-basemap.json").then((response) => {
+      if (!response.ok) throw new Error("底图数据加载失败");
+      return response.json();
+    });
+  }
+  return basemapRequest;
+}
+
+function mapCoordinate([longitude, latitude]: number[]) {
+  return {
+    x: (longitude * Math.PI) / 180,
+    y: Math.log(Math.tan(Math.PI / 4 + (latitude * Math.PI) / 360)),
+  };
+}
+
+function geometryCoordinates(geometry: any) {
+  const coordinates: number[][] = [];
+  function visit(value: any) {
+    if (
+      Array.isArray(value) &&
+      value.length >= 2 &&
+      typeof value[0] === "number" &&
+      typeof value[1] === "number"
+    ) {
+      coordinates.push(value);
+    } else if (Array.isArray(value)) {
+      value.forEach(visit);
+    }
+  }
+  visit(geometry?.coordinates);
+  return coordinates;
+}
+
+function geometryPath(
+  geometry: any,
+  project: (coordinate: number[]) => { x: number; y: number },
+) {
+  const line = (coordinates: number[][], close = false) =>
+    coordinates
+      .map((coordinate, index) => {
+        const point = project(coordinate);
+        return `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`;
+      })
+      .join(" ") + (close ? " Z" : "");
+  if (geometry.type === "LineString") return line(geometry.coordinates);
+  if (geometry.type === "MultiLineString")
+    return geometry.coordinates.map((item: number[][]) => line(item)).join(" ");
+  if (geometry.type === "Polygon")
+    return geometry.coordinates
+      .map((item: number[][]) => line(item, true))
+      .join(" ");
+  if (geometry.type === "MultiPolygon")
+    return geometry.coordinates
+      .flatMap((polygon: number[][][]) =>
+        polygon.map((item: number[][]) => line(item, true)),
+      )
+      .join(" ");
+  return "";
+}
+
 function formatDate(value?: string, withTime = false) {
   if (!value) return "时间不详";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -56,27 +180,77 @@ function dateRange(start?: string, end?: string) {
     : `${formatDate(start)} — ${formatDate(end)}`;
 }
 
+function haversineKm(a: any, b: any) {
+  const radius = 6371;
+  const radians = (value: number) => (value * Math.PI) / 180;
+  const deltaLat = radians(b.latitude - a.latitude);
+  const deltaLng = radians(b.longitude - a.longitude);
+  const value =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(radians(a.latitude)) *
+      Math.cos(radians(b.latitude)) *
+      Math.sin(deltaLng / 2) ** 2;
+  return radius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function amapMarkerUrl(point: any) {
+  const params = new URLSearchParams({
+    position: `${point.longitude},${point.latitude}`,
+    name: point.name,
+    src: "food-journey-atlas",
+    coordinate: "gaode",
+    callnative: "0",
+  });
+  return `https://uri.amap.com/marker?${params.toString()}`;
+}
+
+function LocationCard({ point }: { point: any }) {
+  if (
+    !Number.isFinite(point?.longitude) ||
+    !Number.isFinite(point?.latitude)
+  )
+    return null;
+  const area = [point.province, point.city, point.district]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(" · ");
+  const source =
+    point.coordinateSource === "source_geo"
+      ? "微博发布时附带的位置"
+      : point.coordinateSource === "explicit_region_geocode"
+        ? "微博正文中的地区信息"
+        : point.coordinateSource
+          ? "微博地点与公开地理信息核对"
+          : "公开记录中的地点信息";
+  return (
+    <div className="location-card">
+      <div>
+        <small>地理位置</small>
+        {area && <strong>{area}</strong>}
+        {point.address && <span>{point.address}</span>}
+        <span>位置依据：{source}</span>
+        <code>
+          {point.longitude.toFixed(5)}, {point.latitude.toFixed(5)}
+        </code>
+      </div>
+      <a href={amapMarkerUrl(point)} target="_blank" rel="noreferrer">
+        在高德查看 <Arrow />
+      </a>
+    </div>
+  );
+}
+
 function tripRegionOptions(atlas: Atlas, trip: any): RegionOption[] {
   const options = new Map<string, RegionOption>();
   for (const visit of trip.visits || []) {
-    const location = visit.placeId
-      ? atlas.places[visit.placeId]
-      : visit.regionId
-        ? atlas.regions[visit.regionId]
-        : null;
-    if (!location) continue;
-    const province = location.province || location.city || "其他地区";
-    const city = location.city || province;
-    const key = `${province}::${city}`;
-    options.set(key, {
-      key,
-      province,
-      city,
-      label: city === province ? province : city,
-      count: 0,
-    });
+    const option = regionOptionForVisit(atlas, trip, visit);
+    options.set(option.key, option);
   }
   if (!options.size) {
+    const fallbackGroup = (trip.visits || []).some((visit: any) =>
+      isDomesticCoordinate(visit.longitude, visit.latitude),
+    )
+      ? "国内其他地区"
+      : "海外地区";
     const province =
       (trip.regions || []).find(
         (name: string) =>
@@ -86,7 +260,7 @@ function tripRegionOptions(atlas: Atlas, trip: any): RegionOption[] {
           name.endsWith("市"),
       ) ||
       trip.regions?.[0] ||
-      "其他地区";
+      fallbackGroup;
     const city =
       (trip.regions || []).find(
         (name: string) => name.endsWith("市") && name !== province,
@@ -128,7 +302,10 @@ function regionGroups(atlas: Atlas) {
     }))
     .sort(
       (a, b) =>
-        b.count - a.count || a.province.localeCompare(b.province, "zh-CN"),
+        (a.province === "海外地区" ? 1 : 0) -
+          (b.province === "海外地区" ? 1 : 0) ||
+        b.count - a.count ||
+        a.province.localeCompare(b.province, "zh-CN"),
     );
 }
 function Arrow() {
@@ -454,7 +631,7 @@ function Trips({ atlas }: { atlas: Atlas }) {
             </select>
           </label>
           <fieldset className="region-filters">
-            <legend>按省市查找</legend>
+            <legend>按国内或海外地区查找</legend>
             {groupedRegions.map((group) => (
               <div className="region-group" key={group.province}>
                 <h4>{group.province}</h4>
@@ -517,6 +694,44 @@ function Graph({
   onSelect: (id: string) => void;
   mainOnly: boolean;
 }) {
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [basemap, setBasemap] = useState<Basemap | null>(null);
+  const [viewport, setViewport] = useState({ width: 900, height: 340 });
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const drag = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  useEffect(() => {
+    setZoom(1);
+    setOffset({ x: 0, y: 0 });
+  }, [trip.title, trip.visits.map((visit: any) => visit.id).join("|")]);
+  useEffect(() => {
+    let active = true;
+    loadBasemap()
+      .then((value) => {
+        if (active) setBasemap(value);
+      })
+      .catch(() => {
+        if (active) setBasemap(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width && height) setViewport({ width, height });
+    });
+    observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, []);
   const points = trip.visits
     .filter((v: any) => !mainOnly || v.role === "anchor")
     .filter(
@@ -524,75 +739,393 @@ function Graph({
     );
   if (!points.length)
     return <div className="empty">这些记录暂时没有可绘制坐标。</div>;
-  const lngs = points.map((p: any) => p.longitude),
-    lats = points.map((p: any) => p.latitude);
-  const minLng = Math.min(...lngs),
-    maxLng = Math.max(...lngs),
-    minLat = Math.min(...lats),
-    maxLat = Math.max(...lats);
-  const position = (p: any) => ({
-    x: 10 + ((p.longitude - minLng) / (maxLng - minLng || 1)) * 78,
-    y: 84 - ((p.latitude - minLat) / (maxLat - minLat || 1)) * 68,
-  });
+  const provinceNames = new Set(
+    points.map((point: any) => point.province).filter(Boolean),
+  );
+  const cityNames = new Set(
+    points.map((point: any) => point.city).filter(Boolean),
+  );
+  const districtNames = new Set(
+    points.map((point: any) => point.district).filter(Boolean),
+  );
+  const provinceFeatures =
+    basemap?.features.filter(
+      (feature) =>
+        feature.level === "province" && provinceNames.has(feature.name),
+    ) || [];
+  const cityFeatures =
+    basemap?.features.filter(
+      (feature) => feature.level === "city" && cityNames.has(feature.name),
+    ) || [];
+  const districtFeatures =
+    basemap?.features.filter(
+      (feature) =>
+        feature.level === "district" && districtNames.has(feature.name),
+    ) || [];
+  const routeExtent = points.map((point: any) =>
+    mapCoordinate([point.longitude, point.latitude]),
+  );
+  const minMapX = Math.min(...routeExtent.map((point) => point.x));
+  const maxMapX = Math.max(...routeExtent.map((point) => point.x));
+  const minMapY = Math.min(...routeExtent.map((point) => point.y));
+  const maxMapY = Math.max(...routeExtent.map((point) => point.y));
+  const spanX = Math.max(maxMapX - minMapX, 0.00035);
+  const spanY = Math.max(maxMapY - minMapY, 0.00035);
+  const padding = Math.max(
+    28,
+    Math.min(70, viewport.width * 0.1, viewport.height * 0.16),
+  );
+  const mapScale = Math.min(
+    (viewport.width - padding * 2) / spanX,
+    (viewport.height - padding * 2) / spanY,
+  );
+  const project = (coordinate: number[]) => {
+    const value = mapCoordinate(coordinate);
+    return {
+      x:
+        viewport.width / 2 +
+        (value.x - (minMapX + maxMapX) / 2) * mapScale,
+      y:
+        viewport.height / 2 -
+        (value.y - (minMapY + maxMapY) / 2) * mapScale,
+    };
+  };
+  const position = (point: any) =>
+    project([point.longitude, point.latitude]);
   const anchors = points.filter((p: any) => p.role === "anchor");
+  const relevantRivers =
+    basemap?.rivers.filter((river) =>
+      geometryCoordinates(river.geometry).some((coordinate) => {
+        const value = mapCoordinate(coordinate);
+        return (
+          value.x >= minMapX &&
+          value.x <= maxMapX &&
+          value.y >= minMapY &&
+          value.y <= maxMapY
+        );
+      }),
+    ) || [];
+  const labelGroups = new Map<
+    string,
+    { longitude: number; latitude: number; count: number }
+  >();
+  for (const point of points) {
+    const name = point.district || point.city || point.province;
+    if (!name) continue;
+    const current = labelGroups.get(name) || {
+      longitude: 0,
+      latitude: 0,
+      count: 0,
+    };
+    current.longitude += point.longitude;
+    current.latitude += point.latitude;
+    current.count += 1;
+    labelGroups.set(name, current);
+  }
+  const nodePositions = points.map(position);
+  const placedLabelBoxes: Array<{
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  }> = [];
+  const labelOffsets = [
+    [0, 0],
+    [0, -34],
+    [38, 0],
+    [-38, 0],
+    [0, 34],
+    [34, -28],
+    [-34, -28],
+    [34, 28],
+    [-34, 28],
+  ];
+  const placeLabels = [...labelGroups.entries()]
+    .slice(0, 8)
+    .map(([name, value]) => {
+      const feature = [
+        ...districtFeatures,
+        ...cityFeatures,
+        ...provinceFeatures,
+      ].find((item) => item.name === name);
+      const featurePoints = feature
+        ? geometryCoordinates(feature.geometry).map(project)
+        : [];
+      const featureOrigin = featurePoints.length
+        ? {
+            x:
+              (Math.min(...featurePoints.map((point) => point.x)) +
+                Math.max(...featurePoints.map((point) => point.x))) /
+              2,
+            y:
+              (Math.min(...featurePoints.map((point) => point.y)) +
+                Math.max(...featurePoints.map((point) => point.y))) /
+              2,
+          }
+        : null;
+      const pointOrigin = project([
+        value.longitude / value.count,
+        value.latitude / value.count,
+      ]);
+      const origin =
+        featureOrigin &&
+        featureOrigin.x > 20 &&
+        featureOrigin.x < viewport.width - 20 &&
+        featureOrigin.y > 20 &&
+        featureOrigin.y < viewport.height - 20
+          ? featureOrigin
+          : pointOrigin;
+      const width = name.length * 13 + 12;
+      const height = 20;
+      const candidates = labelOffsets.map(([offsetX, offsetY]) => {
+        const x = origin.x + offsetX;
+        const y = origin.y + offsetY;
+        const box = {
+          left: x - width / 2,
+          right: x + width / 2,
+          top: y - height / 2,
+          bottom: y + height / 2,
+        };
+        const inside =
+          box.left > 8 &&
+          box.right < viewport.width - 8 &&
+          box.top > 8 &&
+          box.bottom < viewport.height - 8;
+        const overlapsLabel = placedLabelBoxes.some(
+          (placed) =>
+            box.left < placed.right &&
+            box.right > placed.left &&
+            box.top < placed.bottom &&
+            box.bottom > placed.top,
+        );
+        const nodeClearance = Math.min(
+          ...nodePositions.map(
+            (point) => Math.hypot(point.x - x, point.y - y) - 30,
+          ),
+        );
+        return {
+          x,
+          y,
+          box,
+          score:
+            nodeClearance - (inside ? 0 : 1000) - (overlapsLabel ? 600 : 0),
+        };
+      });
+      const selected = candidates.sort((a, b) => b.score - a.score)[0];
+      placedLabelBoxes.push(selected.box);
+      return { name, x: selected.x, y: selected.y };
+    });
+  const scope = [
+    ...new Set(
+      points.flatMap((point: any) =>
+        [point.province, point.city, point.district].filter(Boolean),
+      ),
+    ),
+  ].slice(0, 4);
+  const totalDistance = anchors
+    .slice(0, -1)
+    .reduce(
+      (sum: number, point: any, index: number) =>
+        sum + haversineKm(point, anchors[index + 1]),
+      0,
+    );
+
+  function updateZoom(next: number) {
+    const value = Math.min(2.2, Math.max(0.65, next));
+    const ratio = value / zoom;
+    setZoom(value);
+    setOffset((current) => ({
+      x: current.x * ratio,
+      y: current.y * ratio,
+    }));
+  }
+
+  function pointerDown(event: any) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      originX: offset.x,
+      originY: offset.y,
+    };
+  }
+
+  function pointerMove(event: any) {
+    if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+    setOffset({
+      x: drag.current.originX + event.clientX - drag.current.x,
+      y: drag.current.originY + event.clientY - drag.current.y,
+    });
+  }
+
+  function pointerUp(event: any) {
+    if (drag.current?.pointerId === event.pointerId) drag.current = null;
+  }
+
   return (
     <div className="geo-graph" aria-label={`${trip.title}地理关系图`}>
-      <div className="map-grid" />
-      <div className="map-land land-a" />
-      <div className="map-land land-b" />
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        {anchors.slice(0, -1).map((point: any, index: number) => {
-          const a = position(point),
-            b = position(anchors[index + 1]);
-          const distance = Math.hypot(a.x - b.x, a.y - b.y);
-          return (
-            <line
-              key={point.id}
-              x1={a.x}
-              y1={a.y}
-              x2={b.x}
-              y2={b.y}
-              className={distance > 55 ? "long-edge" : ""}
-            />
-          );
-        })}
-      </svg>
-      {points.map((point: any) => {
-        const pos = position(point);
-        return (
-          <button
-            key={point.id}
-            className={`map-node ${point.role} ${selected === point.id ? "selected" : ""}`}
-            style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-            onClick={() => onSelect(point.id)}
-            aria-label={`${roleLabels[point.role]}：${point.name}`}
-          >
-            <i>{point.role === "anchor" ? anchors.indexOf(point) + 1 : "·"}</i>
-            <span>{point.name}</span>
+      <div className="map-toolbar">
+        <div className="map-scope">
+          <small>图上范围</small>
+          <strong>{scope.join(" · ") || "坐标记录"}</strong>
+          {totalDistance > 0 && (
+            <span>站点直线相距约 {Math.round(totalDistance)} km</span>
+          )}
+        </div>
+        <div className="map-controls" aria-label="地图缩放">
+          <button onClick={() => updateZoom(zoom + 0.25)} aria-label="放大">
+            +
           </button>
-        );
-      })}
-      <div className="map-legend">
-        <span>
-          <i className="anchor" />
-          主线
-        </span>
-        <span>
-          <i className="candidate" />
-          可能
-        </span>
-        <span>
-          <i className="region_only" />
-          区域
-        </span>
-        <span>
-          <i className="context" />
-          背景
-        </span>
+          <button onClick={() => updateZoom(zoom - 0.25)} aria-label="缩小">
+            −
+          </button>
+          <button
+            className="reset"
+            onClick={() => {
+              setZoom(1);
+              setOffset({ x: 0, y: 0 });
+            }}
+          >
+            复位
+          </button>
+          <output>{Math.round(zoom * 100)}%</output>
+        </div>
       </div>
-      {anchors.length > 1 && (
-        <small className="map-caption">连线表达记录时序，不是导航路线</small>
-      )}
+      <div
+        className="geo-canvas"
+        ref={canvasRef}
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerUp={pointerUp}
+        onPointerCancel={pointerUp}
+      >
+        <div
+          className="geo-scene"
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+            "--label-scale": 1 / zoom,
+          }}
+        >
+          <svg
+            viewBox={`0 0 ${viewport.width} ${viewport.height}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <g className="admin-map">
+              {provinceFeatures.map((feature) => (
+                <path
+                  key={`province-${feature.name}`}
+                  className="province-shape"
+                  d={geometryPath(feature.geometry, project)}
+                />
+              ))}
+              {cityFeatures.map((feature) => (
+                <path
+                  key={`city-${feature.name}`}
+                  className="city-shape"
+                  d={geometryPath(feature.geometry, project)}
+                />
+              ))}
+              {districtFeatures.map((feature) => (
+                <path
+                  key={`district-${feature.name}`}
+                  className="district-shape"
+                  d={geometryPath(feature.geometry, project)}
+                />
+              ))}
+            </g>
+            <g className="river-map">
+              {relevantRivers.map((river, index) => (
+                <path
+                  key={`${river.name}-${index}`}
+                  d={geometryPath(river.geometry, project)}
+                />
+              ))}
+            </g>
+            {anchors.slice(0, -1).map((point: any, index: number) => {
+              const a = position(point),
+                next = anchors[index + 1],
+                b = position(next);
+              return (
+                <line
+                  key={point.id}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  className={haversineKm(point, next) > 500 ? "long-edge" : ""}
+                />
+              );
+            })}
+          </svg>
+          {placeLabels.map((label) => (
+            <span
+              key={label.name}
+              className="map-place-label"
+              style={{ left: label.x, top: label.y }}
+            >
+              {label.name}
+            </span>
+          ))}
+          {points.map((point: any) => {
+            const pos = position(point);
+            const edgeClass = [
+              pos.x < 100
+                ? "label-left"
+                : pos.x > viewport.width - 100
+                  ? "label-right"
+                  : "",
+              pos.y > viewport.height - 80 ? "label-above" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
+            return (
+              <button
+                key={point.id}
+                className={`map-node ${point.role} ${edgeClass} ${selected === point.id ? "selected" : ""}`}
+                style={{ left: pos.x, top: pos.y }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onSelect(point.id)}
+                aria-label={`${roleLabels[point.role]}：${point.name}`}
+              >
+                <i>{point.role === "anchor" ? anchors.indexOf(point) + 1 : "·"}</i>
+                <span>
+                  <strong>{point.name}</strong>
+                  {(point.city || point.district) && (
+                    <small>
+                      {[point.city, point.district].filter(Boolean).join(" · ")}
+                    </small>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="map-footer">
+        <div className="map-legend">
+          <span>
+            <i className="anchor" />
+            主线
+          </span>
+          <span>
+            <i className="candidate" />
+            可能
+          </span>
+          <span>
+            <i className="region_only" />
+            区域
+          </span>
+          <span>
+            <i className="context" />
+            背景
+          </span>
+        </div>
+        <small title={basemap?.source}>
+          拖动浏览 · 地理轮廓随视窗移动 · 连线表示记录时序
+        </small>
+      </div>
     </div>
   );
 }
@@ -791,6 +1324,7 @@ function TripDetail({ atlas, trip }: { atlas: Atlas; trip: any }) {
                 {selected.contextNote && (
                   <p className="context-note">{selected.contextNote}</p>
                 )}
+                <LocationCard point={selected} />
               </div>
               {selected.food?.length > 0 && (
                 <div className="food-strip">
@@ -864,14 +1398,15 @@ function Recreate({ atlas }: { atlas: Atlas }) {
     const q = keyword.trim().toLowerCase();
     const matches = atlas.trips
       .flatMap((trip) =>
-        trip.visits.map((visit: any) => ({
-          ...visit,
-          sourceTripId: trip.id,
-          tripRegions: trip.regions,
-          tripRegionKeys: tripRegionOptions(atlas, trip).map(
-            (option) => option.key,
-          ),
-        })),
+        trip.visits.map((visit: any) => {
+          const regionOption = regionOptionForVisit(atlas, trip, visit);
+          return {
+            ...visit,
+            sourceTripId: trip.id,
+            regionKey: regionOption.key,
+            regionGroup: regionOption.province,
+          };
+        }),
       )
       .filter(
         (visit, index, all) =>
@@ -880,8 +1415,9 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       .filter((visit) => includePossible || visit.role === "anchor")
       .filter(
         (visit) =>
-          !region || visit.tripRegionKeys.includes(region),
+          Number.isFinite(visit.longitude) && Number.isFinite(visit.latitude),
       )
+      .filter((visit) => !region || visit.regionKey === region)
       .filter(
         (visit) => !year || String(new Date(visit.date).getFullYear()) === year,
       )
@@ -899,25 +1435,46 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       return;
     }
     const wanted = Math.max(2, Number(count));
-    const anchor = matches[Math.floor(Math.random() * matches.length)];
-    const nearby = shuffled(
-      matches.filter(
-        (visit) =>
-          visit.id !== anchor.id &&
-          (visit.sourceTripId === anchor.sourceTripId ||
-            visit.tripRegions.some((name: string) =>
-              anchor.tripRegions.includes(name),
-            )),
-      ),
+    const radiusKm = region
+      ? region.startsWith("海外地区::")
+        ? 180
+        : 260
+      : 320;
+    const neighborhoods = shuffled(matches)
+      .map((anchor) => ({
+        anchor,
+        nearby: matches.filter(
+          (visit) =>
+            visit.id !== anchor.id &&
+            visit.regionGroup === anchor.regionGroup &&
+            haversineKm(anchor, visit) <= radiusKm,
+        ),
+      }))
+      .sort((a, b) => b.nearby.length - a.nearby.length);
+    const viable = neighborhoods.filter(
+      (item) => item.nearby.length >= wanted - 1,
     );
-    const remainder = shuffled(
-      matches.filter(
-        (visit) =>
-          visit.id !== anchor.id &&
-          !nearby.some((item) => item.id === visit.id),
-      ),
-    );
-    const generated = [anchor, ...nearby, ...remainder]
+    const chosen = viable.length
+      ? viable[Math.floor(Math.random() * viable.length)]
+      : neighborhoods[0];
+    const anchor = chosen.anchor;
+    const nearby = chosen.nearby
+      .map((visit) => {
+        const yearDifference = Math.abs(
+          new Date(visit.date).getFullYear() -
+            new Date(anchor.date).getFullYear(),
+        );
+        return {
+          visit,
+          score:
+            haversineKm(anchor, visit) +
+            yearDifference * 60 +
+            Math.random() * 35,
+        };
+      })
+      .sort((a, b) => a.score - b.score)
+      .map((item) => item.visit);
+    const generated = [anchor, ...nearby]
       .slice(0, wanted)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     setResult(generated);
@@ -1074,50 +1631,8 @@ function Recreate({ atlas }: { atlas: Atlas }) {
                   </button>
                 ))}
               </div>
-              {selected && (
-                <section className="generated-detail">
-                  <div className="node-heading">
-                    <p className="kicker">当前一站</p>
-                    <h2>{selected.name}</h2>
-                    <div className="node-meta">
-                      <span>{formatDate(selected.date)}</span>
-                      <span>{roleLabels[selected.role]}</span>
-                      {selected.confidenceLabel && (
-                        <Confidence value={selected.confidenceLabel} />
-                      )}
-                    </div>
-                    {selected.contextNote && (
-                      <p className="context-note">{selected.contextNote}</p>
-                    )}
-                  </div>
-                  {selected.food?.length > 0 && (
-                    <div className="food-strip">
-                      {selected.food.map((food: any) => (
-                        <span key={food.id}>
-                          {food.name}
-                          <small>{food.type}</small>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {selectedPosts.length > 1 && (
-                    <div className="post-tabs">
-                      {selectedPosts.map((post: any, index: number) => (
-                        <button
-                          key={post.id}
-                          className={postIndex === index ? "active" : ""}
-                          onClick={() => setPostIndex(index)}
-                        >
-                          记录 {index + 1}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <RichPost post={selectedPosts[postIndex]} />
-                </section>
-              )}
               <p className="proxy-note">
-                基于历史足迹随机组合，不是导航或实时营业建议。
+                基于历史足迹在相近地区内随机组合；符合条件的记录不足时不会跨区凑数。不是导航或实时营业建议。
               </p>
             </>
           ) : (
@@ -1127,6 +1642,56 @@ function Recreate({ atlas }: { atlas: Atlas }) {
             </div>
           )}
         </div>
+        <aside className="recreate-detail">
+          {selected ? (
+            <section className="generated-detail">
+              <div className="node-heading">
+                <p className="kicker">当前一站</p>
+                <h2>{selected.name}</h2>
+                <div className="node-meta">
+                  <span>{formatDate(selected.date)}</span>
+                  <span>{roleLabels[selected.role]}</span>
+                  {selected.confidenceLabel && (
+                    <Confidence value={selected.confidenceLabel} />
+                  )}
+                </div>
+                {selected.contextNote && (
+                  <p className="context-note">{selected.contextNote}</p>
+                )}
+                <LocationCard point={selected} />
+              </div>
+              {selected.food?.length > 0 && (
+                <div className="food-strip">
+                  {selected.food.map((food: any) => (
+                    <span key={food.id}>
+                      {food.name}
+                      <small>{food.type}</small>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {selectedPosts.length > 1 && (
+                <div className="post-tabs">
+                  {selectedPosts.map((post: any, index: number) => (
+                    <button
+                      key={post.id}
+                      className={postIndex === index ? "active" : ""}
+                      onClick={() => setPostIndex(index)}
+                    >
+                      记录 {index + 1}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <RichPost post={selectedPosts[postIndex]} />
+            </section>
+          ) : (
+            <div className="detail-placeholder">
+              <p className="kicker">当前一站</p>
+              <span>生成旅程后，站点内容会显示在这里。</span>
+            </div>
+          )}
+        </aside>
       </section>
     </main>
   );

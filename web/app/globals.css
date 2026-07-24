@@ -745,9 +745,9 @@ fieldset small {
   color: var(--red);
 }
 .breadcrumb {
-  max-width: 1280px;
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 34px 40px 0;
+  padding: 24px 40px 0;
   display: flex;
   gap: 10px;
   color: var(--muted);
@@ -757,32 +757,35 @@ fieldset small {
   color: var(--red);
 }
 .trip-hero {
-  max-width: 1200px;
+  max-width: 1440px;
   margin: auto;
-  padding: 62px 40px 54px;
+  padding: 34px 40px 38px;
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 80px;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 52px;
+  align-items: center;
 }
 .trip-hero h1 {
-  font-size: clamp(50px, 6vw, 82px);
-  margin: 18px 0 8px;
+  margin: 12px 0 6px;
+  font-size: clamp(46px, 4.4vw, 68px);
+  line-height: 1.08;
+  white-space: nowrap;
 }
 .trip-subtitle {
   color: var(--red) !important;
-  font: 22px var(--serif) !important;
+  font: 19px var(--serif) !important;
 }
 .trip-hero > div > p {
-  max-width: 700px;
+  max-width: none;
+  margin-block: 8px;
   color: var(--muted);
-  line-height: 1.8;
+  line-height: 1.65;
 }
 .trip-facts {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 28px;
+  margin-top: 18px;
 }
 .trip-facts span {
   background: #ebe2d1;
@@ -790,7 +793,7 @@ fieldset small {
   font-size: 12px;
 }
 .trip-hero aside {
-  padding: 22px;
+  padding: 18px 20px;
   border-left: 2px solid var(--red);
   background: #eee6d7;
 }
@@ -799,9 +802,10 @@ fieldset small {
   font-weight: 700;
 }
 .trip-hero aside p {
+  margin-bottom: 0;
   color: var(--muted);
-  line-height: 1.7;
-  font-size: 13px;
+  line-height: 1.6;
+  font-size: 12px;
 }
 .trip-hero code {
   font-size: 10px;
@@ -865,36 +869,29 @@ fieldset small {
   left: 19px;
 }
 .geo-graph {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   height: 440px;
   background: #ded7ca;
   overflow: hidden;
   border: 1px solid #cec4b4;
 }
-.map-grid {
+.geo-canvas {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+.geo-canvas:active {
+  cursor: grabbing;
+}
+.geo-scene {
   position: absolute;
   inset: 0;
-  opacity: 0.2;
-  background-image:
-    linear-gradient(#887e701f 1px, transparent 1px),
-    linear-gradient(90deg, #887e701f 1px, transparent 1px);
-  background-size: 44px 44px;
-}
-.map-land {
-  position: absolute;
-  background: #eee8dc;
-  border: 1px solid #c7bdad;
-  border-radius: 45% 55% 57% 43%;
-  transform: rotate(-10deg);
-}
-.land-a {
-  inset: 9% 8% 23% 21%;
-}
-.land-b {
-  width: 35%;
-  height: 40%;
-  right: -9%;
-  bottom: -6%;
+  transform-origin: center;
 }
 .geo-graph svg {
   position: absolute;
@@ -910,6 +907,43 @@ fieldset small {
 }
 .geo-graph line.long-edge {
   stroke-dasharray: 2 2;
+}
+.admin-map path {
+  vector-effect: non-scaling-stroke;
+}
+.province-shape {
+  fill: #eee7da;
+  stroke: #938b7f;
+  stroke-width: 1.1;
+}
+.city-shape {
+  fill: #f3ede2aa;
+  stroke: #aaa194;
+  stroke-width: 0.75;
+  stroke-dasharray: 3 2;
+}
+.district-shape {
+  fill: #f6f0e5aa;
+  stroke: #9e9588;
+  stroke-width: 0.8;
+}
+.river-map path {
+  fill: none;
+  stroke: #78959b;
+  stroke-width: 0.75;
+  opacity: 0.48;
+  vector-effect: non-scaling-stroke;
+}
+.map-place-label {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  color: #68635b;
+  font: 10px var(--serif);
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+  pointer-events: none;
+  white-space: nowrap;
 }
 .map-node {
   position: absolute;
@@ -939,12 +973,46 @@ fieldset small {
   position: absolute;
   top: 30px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--label-scale, 1));
+  transform-origin: top center;
   background: #fffdf4;
-  padding: 5px 8px;
+  padding: 7px 9px;
   font-size: 10px;
   white-space: nowrap;
   box-shadow: 0 2px 8px #0002;
+  text-align: left;
+}
+.map-node.label-above span {
+  top: auto;
+  bottom: 30px;
+  transform-origin: bottom center;
+}
+.map-node.label-left span {
+  left: 0;
+  transform: scale(var(--label-scale, 1));
+  transform-origin: top left;
+}
+.map-node.label-right span {
+  right: 0;
+  left: auto;
+  transform: scale(var(--label-scale, 1));
+  transform-origin: top right;
+}
+.map-node.label-above.label-left span {
+  transform-origin: bottom left;
+}
+.map-node.label-above.label-right span {
+  transform-origin: bottom right;
+}
+.map-node span strong,
+.map-node span small {
+  display: block;
+}
+.map-node span small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 400;
 }
 .map-node:hover span,
 .map-node.selected span {
@@ -972,13 +1040,8 @@ fieldset small {
   opacity: 0.75;
 }
 .map-legend {
-  position: absolute;
-  left: 14px;
-  bottom: 12px;
   display: flex;
   gap: 12px;
-  background: #fffdf4dd;
-  padding: 7px 9px;
   font-size: 10px;
 }
 .map-legend span {
@@ -1004,14 +1067,79 @@ fieldset small {
   background: #7d7b72;
   opacity: 0.65;
 }
-.map-caption {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  background: #fffdf4dd;
-  padding: 7px;
+.map-toolbar,
+.map-footer {
+  position: relative;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  background: #f7f2e9;
+}
+.map-toolbar {
+  min-height: 62px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #c9c0b2;
+}
+.map-footer {
+  min-height: 38px;
+  padding: 8px 12px;
+  border-top: 1px solid #c9c0b2;
+}
+.map-footer > small {
   color: var(--muted);
   font-size: 9px;
+}
+.map-scope {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-scope small,
+.map-scope span {
+  color: var(--muted);
+  font-size: 9px;
+}
+.map-scope strong {
+  overflow: hidden;
+  font: 600 11px var(--serif);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-controls {
+  display: flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid #b8ad9d;
+  background: #fffdf4;
+}
+.map-controls button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-right: 1px solid #d1c7b8;
+  background: transparent;
+  color: var(--ink);
+  font: 16px Georgia, serif;
+}
+.map-controls button:hover {
+  background: #f1eadf;
+}
+.map-controls .reset {
+  width: auto;
+  padding: 0 8px;
+  border-right: 0;
+  font: 10px var(--sans);
+}
+.map-controls output {
+  display: grid;
+  min-width: 47px;
+  place-items: center;
+  color: var(--muted);
+  font: 9px Georgia, serif;
+  border-left: 1px solid #d1c7b8;
 }
 .route-list {
   margin-top: 18px;
@@ -1086,6 +1214,48 @@ fieldset small {
   border-left: 2px solid #8b877f;
   font-size: 12px;
   line-height: 1.7;
+}
+.location-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: end;
+  margin-top: 16px;
+  padding: 13px 14px;
+  border: 1px solid #d6cec1;
+  background: #f7f2e9;
+}
+.location-card > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.location-card small,
+.location-card span,
+.location-card code {
+  color: var(--muted);
+  font-size: 10px;
+}
+.location-card strong {
+  font: 600 12px var(--serif);
+}
+.location-card span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.location-card code {
+  font-family: Georgia, serif;
+  letter-spacing: 0.04em;
+}
+.location-card a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--red);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .food-strip,
 .tag-cloud {
@@ -1227,15 +1397,19 @@ mark {
   margin-inline: auto;
 }
 .recreate-layout {
-  max-width: 1200px;
+  width: calc(100% - 48px);
+  max-width: 1760px;
   margin: 0 auto 130px;
   display: grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns:
+    minmax(280px, 320px)
+    minmax(540px, 1fr)
+    minmax(300px, 360px);
   min-height: 670px;
   border: 1px solid var(--line);
 }
 .recreate-form {
-  padding: 34px;
+  padding: 30px;
   background: #eee6d8;
 }
 .form-section {
@@ -1283,7 +1457,37 @@ mark {
 }
 .recreate-result {
   background: var(--white);
-  padding: 42px;
+  min-width: 0;
+  padding: 32px;
+  border-left: 1px solid var(--line);
+}
+.recreate-detail {
+  min-width: 0;
+  padding: 30px 26px;
+  border-left: 1px solid var(--line);
+  background: #f4eee4;
+}
+.recreate-detail .generated-detail {
+  position: sticky;
+  top: 86px;
+  max-height: calc(100vh - 112px);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 5px 0 0;
+  border-top: 0;
+}
+.recreate-detail .location-card {
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+.detail-placeholder {
+  position: sticky;
+  top: 86px;
+  color: var(--muted);
+}
+.detail-placeholder span {
+  font-size: 12px;
+  line-height: 1.7;
 }
 .result-placeholder {
   height: 100%;
@@ -1483,6 +1687,23 @@ mark {
   gap: 18px;
 }
 
+@media (max-width: 1300px) {
+  .recreate-layout {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+  .recreate-detail {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+  .recreate-detail .generated-detail,
+  .detail-placeholder {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 @media (max-width: 980px) {
   .site-header nav {
     gap: 18px;
@@ -1523,7 +1744,10 @@ mark {
   }
   .trip-hero {
     grid-template-columns: 1fr;
-    gap: 30px;
+    gap: 22px;
+  }
+  .trip-hero h1 {
+    white-space: normal;
   }
   .trip-workspace {
     grid-template-columns: 1fr;
@@ -1534,7 +1758,7 @@ mark {
   }
   .recreate-layout {
     margin-inline: 24px;
-    grid-template-columns: 360px 1fr;
+    grid-template-columns: 280px 1fr;
   }
   .geo-graph {
     height: 390px;
@@ -1674,6 +1898,25 @@ mark {
   .map-caption {
     display: none;
   }
+  .map-scope {
+    max-width: calc(100% - 180px);
+  }
+  .map-scope span {
+    display: none;
+  }
+  .map-footer {
+    gap: 8px;
+  }
+  .map-footer > small {
+    display: none;
+  }
+  .map-controls output {
+    display: none;
+  }
+  .location-card {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
   .route-list button {
     grid-template-columns: 32px 1fr;
   }
@@ -1686,11 +1929,17 @@ mark {
     gap: 12px;
   }
   .recreate-layout {
+    width: auto;
     grid-template-columns: 1fr;
     margin: 0 16px 80px;
   }
   .recreate-result {
     padding: 24px 16px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+  .recreate-detail {
+    grid-column: auto;
   }
   .result-placeholder {
     min-height: 360px;
