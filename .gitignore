@@ -1,6 +1,7 @@
 # Secrets
 data-processing/.env
 .env
+.dev.vars*
 
 # Generated and source data, API/LLM caches, audit outputs
 data-processing/data/

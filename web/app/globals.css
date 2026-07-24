@@ -1426,6 +1426,67 @@ mark {
   padding: 30px;
   background: #eee6d8;
 }
+.natural-query {
+  margin: 0 0 28px;
+  padding: 0 0 26px;
+  border-bottom: 1px solid var(--line);
+}
+.natural-query > .kicker {
+  margin: 0 0 12px;
+}
+.natural-query label {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.natural-query textarea {
+  width: 100%;
+  min-height: 94px;
+  margin-top: 8px;
+  padding: 12px;
+  resize: vertical;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  font: 13px/1.65 var(--sans);
+}
+.query-button {
+  width: 100%;
+  margin-top: 10px;
+  border-color: var(--ink);
+  background: transparent;
+}
+.query-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.query-feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.5);
+  border-left: 2px solid var(--line);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.query-feedback strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+.query-feedback.understood {
+  border-left-color: var(--teal);
+}
+.query-feedback.needs_clarification {
+  border-left-color: #aa7a28;
+}
+.query-feedback.irrelevant,
+.query-feedback.error {
+  border-left-color: var(--red);
+}
 .form-section {
   display: flex;
   gap: 14px;

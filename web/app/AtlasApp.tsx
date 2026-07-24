@@ -47,6 +47,23 @@ type RegionOption = {
   count: number;
 };
 
+type JourneyQueryResponse =
+  | {
+      status: "parsed";
+      conditions: {
+        regionKey?: string;
+        year?: number;
+        nodeCount?: 2 | 3 | 5 | 7;
+        keyword?: string;
+        includePossible?: boolean;
+      };
+      summary: string;
+    }
+  | {
+      status: "needs_clarification" | "irrelevant";
+      message: string;
+    };
+
 function isDomesticCoordinate(longitude?: number, latitude?: number) {
   return (
     Number.isFinite(longitude) &&
@@ -802,11 +819,13 @@ function Graph({
   selected,
   onSelect,
   mainOnly,
+  routeAll = false,
 }: {
   trip: any;
   selected: string;
   onSelect: (id: string) => void;
   mainOnly: boolean;
+  routeAll?: boolean;
 }) {
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -919,6 +938,7 @@ function Graph({
   const position = (point: any) =>
     project([point.longitude, point.latitude]);
   const anchors = points.filter((p: any) => p.role === "anchor");
+  const routePoints = routeAll ? points : anchors;
   const relevantRivers =
     basemap?.rivers.filter((river) =>
       geometryCoordinates(river.geometry).some((coordinate) => {
@@ -1057,11 +1077,11 @@ function Graph({
       ),
     ),
   ].slice(0, 4);
-  const totalDistance = anchors
+  const totalDistance = routePoints
     .slice(0, -1)
     .reduce(
       (sum: number, point: any, index: number) =>
-        sum + haversineKm(point, anchors[index + 1]),
+        sum + haversineKm(point, routePoints[index + 1]),
       0,
     );
 
@@ -1196,9 +1216,9 @@ function Graph({
                 />
               ))}
             </g>
-            {anchors.slice(0, -1).map((point: any, index: number) => {
+            {routePoints.slice(0, -1).map((point: any, index: number) => {
               const a = position(point),
-                next = anchors[index + 1],
+                next = routePoints[index + 1],
                 b = position(next);
               return (
                 <line
@@ -1242,7 +1262,13 @@ function Graph({
                 onClick={() => onSelect(point.id)}
                 aria-label={`${roleLabels[point.role]}：${point.name}`}
               >
-                <i>{point.role === "anchor" ? anchors.indexOf(point) + 1 : "·"}</i>
+                <i>
+                  {routeAll
+                    ? routePoints.indexOf(point) + 1
+                    : point.role === "anchor"
+                      ? anchors.indexOf(point) + 1
+                      : "·"}
+                </i>
                 <span>
                   <strong>{point.name}</strong>
                   {(point.city || point.district) && (
@@ -1517,6 +1543,11 @@ function TripDetail({ atlas, trip }: { atlas: Atlas; trip: any }) {
 }
 
 function Recreate({ atlas }: { atlas: Atlas }) {
+  const [queryText, setQueryText] = useState("");
+  const [queryResult, setQueryResult] =
+    useState<JourneyQueryResponse | null>(null);
+  const [queryError, setQueryError] = useState("");
+  const [isUnderstanding, setIsUnderstanding] = useState(false);
   const [region, setRegion] = useState("");
   const [year, setYear] = useState("");
   const [count, setCount] = useState("3");
@@ -1526,6 +1557,23 @@ function Recreate({ atlas }: { atlas: Atlas }) {
   const [selectedId, setSelectedId] = useState("");
   const [postIndex, setPostIndex] = useState(0);
   const groupedRegions = useMemo(() => regionGroups(atlas), [atlas]);
+  const queryOptions = useMemo(
+    () => ({
+      regions: groupedRegions.flatMap((group) =>
+        group.cities.map((city) => ({
+          key: city.key,
+          label: city.label,
+          province: city.province,
+        })),
+      ),
+      years: atlas.manifest.years,
+      keywords: atlas.facets.slice(0, 160).map((facet) => ({
+        name: facet.name,
+        type: facet.type,
+      })),
+    }),
+    [atlas.facets, atlas.manifest.years, groupedRegions],
+  );
   const selectedRegionLabel =
     groupedRegions
       .flatMap((group) => group.cities)
@@ -1537,6 +1585,50 @@ function Recreate({ atlas }: { atlas: Atlas }) {
     .filter(Boolean);
 
   useEffect(() => setPostIndex(0), [selectedId]);
+
+  async function understandQuery() {
+    const text = queryText.trim();
+    if (!text) {
+      setQueryError("先写一句你的想法，再让我帮你拆成条件。");
+      setQueryResult(null);
+      return;
+    }
+    setIsUnderstanding(true);
+    setQueryError("");
+    setQueryResult(null);
+    try {
+      const response = await fetch("/api/journey-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, options: queryOptions }),
+      });
+      const payload = (await response.json()) as JourneyQueryResponse & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "暂时没有理解成功");
+      }
+      setQueryResult(payload);
+      if (payload.status === "parsed") {
+        const conditions = payload.conditions;
+        if (conditions.regionKey !== undefined) setRegion(conditions.regionKey);
+        if (conditions.year !== undefined) setYear(String(conditions.year));
+        if (conditions.nodeCount !== undefined)
+          setCount(String(conditions.nodeCount));
+        if (conditions.keyword !== undefined) setKeyword(conditions.keyword);
+        if (conditions.includePossible !== undefined)
+          setIncludePossible(conditions.includePossible);
+      }
+    } catch (error) {
+      setQueryError(
+        error instanceof Error
+          ? error.message
+          : "暂时没有理解成功，请直接使用下面的选项。",
+      );
+    } finally {
+      setIsUnderstanding(false);
+    }
+  }
 
   function shuffled<T>(items: T[]) {
     const copy = [...items];
@@ -1650,6 +1742,50 @@ function Recreate({ atlas }: { atlas: Atlas }) {
       </section>
       <section className="recreate-layout">
         <form onSubmit={submit} className="recreate-form">
+          <div className="natural-query">
+            <p className="kicker">先说说你的想法</p>
+            <label>
+              例如“想看看 2024 年在成都吃川菜的三个点”
+              <textarea
+                value={queryText}
+                onChange={(event) => setQueryText(event.target.value)}
+                placeholder="地区、年份、想吃什么、走几个点，都可以用自己的话说。"
+                rows={4}
+                maxLength={500}
+              />
+            </label>
+            <button
+              type="button"
+              className="button query-button"
+              onClick={understandQuery}
+              disabled={isUnderstanding}
+            >
+              {isUnderstanding ? "正在理解…" : "帮我填入条件"}
+            </button>
+            {queryResult?.status === "parsed" && (
+              <div className="query-feedback understood">
+                <strong>已经填好了</strong>
+                <span>{queryResult.summary}</span>
+                <small>下面的条件仍然可以手动修改，确认后再生成旅程。</small>
+              </div>
+            )}
+            {queryResult?.status !== "parsed" && queryResult && (
+              <div className={`query-feedback ${queryResult.status}`}>
+                <strong>
+                  {queryResult.status === "irrelevant"
+                    ? "这次没有可用条件"
+                    : "还需要一点信息"}
+                </strong>
+                <span>{queryResult.message}</span>
+              </div>
+            )}
+            {queryError && (
+              <div className="query-feedback error">
+                <strong>暂时没能理解</strong>
+                <span>{queryError}</span>
+              </div>
+            )}
+          </div>
           <div className="form-section">
             <span>01</span>
             <div>
@@ -1762,6 +1898,7 @@ function Recreate({ atlas }: { atlas: Atlas }) {
                 selected={selected?.id || ""}
                 onSelect={setSelectedId}
                 mainOnly={false}
+                routeAll
               />
               <div className="generated-list">
                 {result.map((visit, index) => (

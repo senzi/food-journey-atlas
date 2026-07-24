@@ -1,91 +1,109 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
-const developmentPreviewMeta =
-  /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
-const templateRoot = new URL("../", import.meta.url);
-const previewRoot = new URL("../app/_sites-preview/", import.meta.url);
-
-async function render() {
+async function getWorker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+  return (await import(workerUrl.href)).default;
 }
 
-test("server-renders the starter loading skeleton", async () => {
-  const response = await render();
+function environment(overrides = {}) {
+  return {
+    ASSETS: {
+      fetch: async () => new Response("Not found", { status: 404 }),
+    },
+    ...overrides,
+  };
+}
+
+const context = {
+  waitUntil() {},
+  passThroughOnException() {},
+};
+
+test("server-renders the atlas home page", async () => {
+  const worker = await getWorker();
+  const response = await worker.fetch(
+    new Request("http://localhost/"),
+    environment(),
+    context,
+  );
+
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
   const html = await response.text();
-  assert.match(html, developmentPreviewMeta);
-  assert.match(html, /<title>Your site is taking shape<\/title>/i);
-  assert.match(html, /Building your site/);
-  assert.match(html, /Your site is taking shape/);
-  assert.match(
-    html,
-    /Your first version will appear here automatically when it’s ready\./,
-  );
-  assert.doesNotMatch(html, /Codex/);
-  assert.match(html, /react-loading-skeleton/);
-  assert.match(html, /role="status"/);
+  assert.match(html, /<title>陈晓卿美食足迹地图<\/title>/);
+  assert.match(html, /正在展开旅程档案/);
 });
 
-test("keeps the loading skeleton scoped and disposable", async () => {
-  const [preview, css, page, layout, packageJson, files] = await Promise.all([
-    readFile(new URL("SkeletonPreview.tsx", previewRoot), "utf8"),
-    readFile(new URL("preview.css", previewRoot), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(previewRoot),
-  ]);
-
-  assert.deepEqual(files.sort(), ["SkeletonPreview.tsx", "preview.css"]);
-  assert.match(preview, /from "react-loading-skeleton"/);
-  assert.match(preview, /baseColor="#eceae7"/);
-  assert.match(preview, /highlightColor="#f9f8f6"/);
-  assert.match(preview, /duration=\{2\.8\}/);
-  assert.match(preview, /sites-skeleton-search-placeholder/);
-  assert.match(packageJson, /"react-loading-skeleton": "3\.5\.0"/);
-
-  const shellIndex = preview.indexOf('className="sites-skeleton-shell"');
-  const statusIndex = preview.indexOf('className="sites-skeleton-status"');
-  assert.ok(shellIndex >= 0 && statusIndex > shellIndex);
-  assert.match(css, /position:\s*fixed/);
-  assert.match(css, /inset:\s*0/);
-  assert.match(css, /opacity:\s*0\.52/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(css, /#020617|canvas|pets|progress/i);
-  assert.doesNotMatch(
-    preview,
-    /loading-spinner|status-mark|status-progress|canvas|cookie|random/i,
+test("server-renders the natural-language journey form", async () => {
+  const worker = await getWorker();
+  const response = await worker.fetch(
+    new Request("http://localhost/recreate"),
+    environment(),
+    context,
   );
 
-  assert.match(page, /export const metadata:\s*Metadata/);
-  assert.match(page, /"codex-preview": "development"/);
-  assert.match(page, /<SkeletonPreview \/>/);
-  assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
-  assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /"pathname":"\/recreate"/);
 
-  await assert.rejects(
-    access(new URL("public/_sites-preview", templateRoot)),
+  const assetsUrl = new URL("../dist/client/assets/", import.meta.url);
+  const assetNames = await readdir(assetsUrl);
+  const atlasAsset = assetNames.find(
+    (name) => name.startsWith("AtlasApp-") && name.endsWith(".js"),
   );
+  assert.ok(atlasAsset, "AtlasApp client asset was not built");
+  const clientCode = await readFile(new URL(atlasAsset, assetsUrl), "utf8");
+  assert.match(clientCode, /复刻一段美食旅程/);
+  assert.match(clientCode, /先说说你的想法/);
+  assert.match(clientCode, /帮我填入条件/);
+});
+
+test("journey-query API validates input before calling the model", async () => {
+  const worker = await getWorker();
+  const response = await worker.fetch(
+    new Request("http://localhost/api/journey-query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "" }),
+    }),
+    environment(),
+    context,
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "请先写一句你的想法" });
+});
+
+test("journey-query API keeps the model key on the server", async () => {
+  const worker = await getWorker();
+  const response = await worker.fetch(
+    new Request("http://localhost/api/journey-query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "2024 年去成都吃川菜",
+        options: {
+          regions: [
+            {
+              key: "四川省::成都市",
+              label: "成都市",
+              province: "四川省",
+            },
+          ],
+          years: [2024],
+          keywords: [{ name: "川菜", type: "菜系" }],
+        },
+      }),
+    }),
+    environment(),
+    context,
+  );
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    error: "服务端还没有配置 DeepSeek 密钥",
+  });
 });

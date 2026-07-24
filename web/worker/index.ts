@@ -1,10 +1,15 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { handleJourneyQuery } from "./journey-query";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  deepseek_key?: string;
+  DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_MODEL?: string;
+  DEEPSEEK_BASE_URL?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -38,6 +43,10 @@ const worker = {
           return result.response();
         },
       }, allowedWidths);
+    }
+
+    if (url.pathname === "/api/journey-query") {
+      return handleJourneyQuery(request, env);
     }
 
     return handler.fetch(request, env, ctx);
