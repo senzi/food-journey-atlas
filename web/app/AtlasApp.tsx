@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CSSProperties,
   FormEvent,
   ReactNode,
   useEffect,
@@ -8,7 +9,26 @@ import {
   useRef,
   useState,
 } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+
+function usePathname() {
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+  useEffect(() => {
+    const update = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  return pathname;
+}
+
+function useSearchParams() {
+  const [search, setSearch] = useState(() => window.location.search);
+  useEffect(() => {
+    const update = () => setSearch(window.location.search);
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  return useMemo(() => new URLSearchParams(search), [search]);
+}
 
 type Atlas = {
   manifest: {
@@ -910,10 +930,18 @@ function Graph({
   const routeExtent = points.map((point: any) =>
     mapCoordinate([point.longitude, point.latitude]),
   );
-  const minMapX = Math.min(...routeExtent.map((point) => point.x));
-  const maxMapX = Math.max(...routeExtent.map((point) => point.x));
-  const minMapY = Math.min(...routeExtent.map((point) => point.y));
-  const maxMapY = Math.max(...routeExtent.map((point) => point.y));
+  const minMapX = Math.min(
+    ...routeExtent.map((point: { x: number; y: number }) => point.x),
+  );
+  const maxMapX = Math.max(
+    ...routeExtent.map((point: { x: number; y: number }) => point.x),
+  );
+  const minMapY = Math.min(
+    ...routeExtent.map((point: { x: number; y: number }) => point.y),
+  );
+  const maxMapY = Math.max(
+    ...routeExtent.map((point: { x: number; y: number }) => point.y),
+  );
   const spanX = Math.max(maxMapX - minMapX, 0.00035);
   const spanY = Math.max(maxMapY - minMapY, 0.00035);
   const padding = Math.max(
@@ -1055,7 +1083,8 @@ function Graph({
         );
         const nodeClearance = Math.min(
           ...nodePositions.map(
-            (point) => Math.hypot(point.x - x, point.y - y) - 30,
+            (point: { x: number; y: number }) =>
+              Math.hypot(point.x - x, point.y - y) - 30,
           ),
         );
         return {
@@ -1160,7 +1189,7 @@ function Graph({
           style={{
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
             "--label-scale": 1 / zoom,
-          }}
+          } as CSSProperties & { "--label-scale": number }}
         >
           <svg
             viewBox={`0 0 ${viewport.width} ${viewport.height}`}

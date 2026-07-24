@@ -1,3 +1,4 @@
+// Shared by the Cloudflare Pages Function and local tests.
 type JourneyRegion = {
   key: string;
   label: string;
@@ -265,32 +266,52 @@ export async function handleJourneyQuery(
       /\/+$/,
       "",
     );
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-        messages: [
-          { role: "system", content: buildPrompt(options) },
-          { role: "user", content: text },
-        ],
-        response_format: { type: "json_object" },
-        thinking: { type: "disabled" },
-        temperature: 0.1,
-        max_tokens: 600,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(45_000),
+    const requestBody = JSON.stringify({
+      model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
+      messages: [
+        { role: "system", content: buildPrompt(options) },
+        { role: "user", content: text },
+      ],
+      response_format: { type: "json_object" },
+      thinking: { type: "disabled" },
+      temperature: 0.1,
+      max_tokens: 600,
+      stream: false,
     });
-    const raw = (await response.json()) as {
-      error?: { message?: string };
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    if (!response.ok) {
-      throw new Error(raw.error?.message || `DeepSeek HTTP ${response.status}`);
+    let response: Response | undefined;
+    let raw:
+      | {
+          error?: { message?: string };
+          choices?: Array<{ message?: { content?: string } }>;
+        }
+      | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(45_000),
+      });
+      raw = (await response.json()) as {
+        error?: { message?: string };
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      if (response.ok) break;
+      const retryable = response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === 2) {
+        throw new Error(
+          raw.error?.message || `DeepSeek HTTP ${response.status}`,
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, 400 * 2 ** attempt),
+      );
+    }
+    if (!response?.ok || !raw) {
+      throw new Error("DeepSeek 请求没有成功");
     }
     const content = raw.choices?.[0]?.message?.content;
     if (!content) throw new Error("DeepSeek 没有返回内容");

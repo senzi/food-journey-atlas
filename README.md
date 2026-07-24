@@ -16,10 +16,9 @@
 
 ## 技术栈
 
-- React 19、Next.js 16
-- [Vinext](https://github.com/cloudflare/vinext)
+- React 19
 - Vite 8
-- Cloudflare Workers Runtime
+- Cloudflare Pages 与 Pages Functions
 - DeepSeek `deepseek-v4-flash`
 - 本地行政区轮廓与河流数据，不依赖在线地图 API
 
@@ -30,7 +29,7 @@
 ```bash
 cd web
 npm install
-npm run dev
+npm run pages:dev
 ```
 
 默认地址为 <http://localhost:3000>。
@@ -61,12 +60,23 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 部署到 Cloudflare 时，请将 `deepseek_key` 配置为 Secret，不要把 `.dev.vars` 提交到仓库。
 
+## Cloudflare Pages 构建配置
+
+```text
+根目录：web
+构建命令：npm run build
+构建输出：dist
+```
+
+Vite 会直接生成 `dist/index.html` 和静态资源；`web/functions/` 由 Pages 单独编译，不需要额外的服务端构建目录。没有生成顶层 `404.html`，因此 Pages 会按 SPA 方式把深层路径交回首页，再由前端显示对应旅程、地点或记录。
+
 ## 常用命令
 
 ```bash
 cd web
-npm run dev          # 启动本地开发服务
-npm run build        # 构建 Cloudflare 版本
+npm run dev          # 只启动静态前端开发服务
+npm run pages:dev    # 构建并启动包含 Functions 的本地 Pages
+npm run build        # 构建到 dist
 npm test             # 构建并运行测试
 npm run data:build   # 从维护者本地数据重新生成公共数据
 ```

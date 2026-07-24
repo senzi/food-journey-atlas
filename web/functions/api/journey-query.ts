@@ -1,4 +1,4 @@
-import { handleJourneyQuery } from "../../worker/journey-query";
+import { handleJourneyQuery } from "../../lib/journey-query";
 
 interface Env {
   deepseek_key?: string;
